@@ -1,1 +1,3 @@
 data/runtime-state.json
+__pycache__/
+*.pyc
