@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HydroVision | Monitoreo de Huerta Hidropónica</title>
+  <meta
+    name="description"
+    content="Dashboard en tiempo real para monitoreo de variables de una huerta hidropónica con integración futura a PLCnext, ESP32 y Raspberry Pi."
+  >
+  <link rel="stylesheet" href="./app/styles/main.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero__copy">
+        <p class="eyebrow">Monitoreo integral | Mock listo para integración</p>
+        <h1>HydroVision</h1>
+        <p class="hero__lead">
+          Supervisión en tiempo real para una huerta hidropónica con variables ambientales,
+          agua de proceso, alarmas operativas y video en vivo desde Raspberry Pi.
+        </p>
+        <div class="hero__actions">
+          <button id="toggleSimulation" class="button button--primary" type="button">Pausar simulación</button>
+          <button id="injectAlert" class="button button--ghost" type="button">Forzar evento crítico</button>
+        </div>
+      </div>
+      <aside class="hero__status">
+        <div class="status-card">
+          <span class="status-card__label">Estado general</span>
+          <strong id="globalStatus" class="status-pill status-pill--ok">Operación estable</strong>
+        </div>
+        <div class="status-card">
+          <span class="status-card__label">Última actualización</span>
+          <strong id="lastUpdate">--:--:--</strong>
+        </div>
+        <div class="status-card">
+          <span class="status-card__label">Modo de datos</span>
+          <strong id="dataMode">Backend mock</strong>
+        </div>
+        <div class="status-card">
+          <span class="status-card__label">Próxima integración</span>
+          <strong>MQTT / PLCnext / cámara C922</strong>
+        </div>
+      </aside>
+    </header>
+
+    <main class="dashboard">
+      <section class="panel panel--wide" aria-labelledby="overviewTitle">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Resumen operativo</p>
+            <h2 id="overviewTitle">Variables críticas</h2>
+          </div>
+          <span class="badge">Actualización cada 2 segundos</span>
+        </div>
+        <div id="sensorGrid" class="sensor-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="cameraTitle">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Video en vivo</p>
+            <h2 id="cameraTitle">Canal de cultivo</h2>
+          </div>
+          <span id="cameraBadge" class="badge badge--dark">Mock stream</span>
+        </div>
+        <div class="camera-frame">
+          <canvas id="cameraCanvas" width="640" height="360" aria-label="Simulación de cámara de la huerta"></canvas>
+          <img id="cameraImage" class="camera-media" alt="Video en vivo de la huerta" hidden>
+          <iframe
+            id="cameraEmbed"
+            class="camera-media camera-media--embed"
+            title="Video en vivo de la huerta"
+            loading="lazy"
+            allow="autoplay; fullscreen"
+            hidden
+          ></iframe>
+          <div id="cameraFallback" class="camera-frame__fallback" hidden>
+            No se pudo abrir el stream. Revisá la URL configurada en la Raspberry y la red local.
+          </div>
+          <div class="camera-frame__hud">
+            <span class="record-dot"></span>
+            <span id="cameraSourceLabel">LOGI C922 / Raspberry Pi</span>
+            <span id="cameraTimestamp">--:--:--</span>
+          </div>
+        </div>
+        <p id="cameraNote" class="panel__note">
+          Esta vista usa una simulación visual. El contenedor queda listo para recibir MJPEG, HLS o WebRTC desde la Raspberry.
+        </p>
+      </section>
+
+      <section class="panel" aria-labelledby="alarmTitle">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Eventos</p>
+            <h2 id="alarmTitle">Alarmas y advertencias</h2>
+          </div>
+          <span id="alarmCounter" class="badge">0 activas</span>
+        </div>
+        <ul id="alarmList" class="alarm-list"></ul>
+      </section>
+
+      <section class="panel" aria-labelledby="opsTitle">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Control mock</p>
+            <h2 id="opsTitle">Actuadores y servicios</h2>
+          </div>
+          <span id="serviceCounter" class="badge badge--dark">Sincronizando</span>
+        </div>
+        <div id="actuatorGrid" class="ops-grid"></div>
+        <div id="serviceList" class="service-list"></div>
+      </section>
+
+      <section class="panel panel--wide" aria-labelledby="historyTitle">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Histórico reciente</p>
+            <h2 id="historyTitle">Tendencias por sensor</h2>
+          </div>
+          <span class="badge">Ventana de 40 muestras</span>
+        </div>
+        <div id="chartGrid" class="chart-grid"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="integrationTitle">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Arquitectura</p>
+            <h2 id="integrationTitle">Ruta de integración</h2>
+          </div>
+          <span class="badge badge--dark">Preparado para hardware</span>
+        </div>
+        <ol class="stack-list">
+          <li>ESP32 publica mediciones por MQTT.</li>
+          <li>PLCnext gobierna actuadores y alarmas duras.</li>
+          <li>Raspberry Pi actúa como gateway y servidor de video.</li>
+          <li>El dashboard consume la misma estructura de datos desde mocks o backend real.</li>
+        </ol>
+        <div class="code-card">
+          <h3>Payload esperado</h3>
+          <pre><code>{
+  "sensorId": "water-ph",
+  "value": 6.21,
+  "unit": "pH",
+  "status": "ok",
+  "timestamp": "2026-03-16T20:00:00Z",
+  "source": "mock-backend"
+}</code></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./app/scripts/charts.js"></script>
+  <script src="./app/scripts/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "hydrovision-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dashboard full-stack para monitoreo de huerta hidropónica con backend Node y simulación lista para integrar hardware real.",
+  "scripts": {
+    "start": "node server.js",
+    "reset-data": "node -e \"require('fs').rmSync('data/runtime-state.json',{force:true})\""
+  }
+}
