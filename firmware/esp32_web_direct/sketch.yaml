@@ -1,0 +1,8 @@
+profiles:
+  esp32s3:
+    fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,USBMode=hwcdc,UploadMode=default
+    platforms:
+      - platform: esp32:esp32 (3.3.8)
+    libraries:
+      - DHT sensor library (1.4.7)
+      - Adafruit Unified Sensor (1.1.15)

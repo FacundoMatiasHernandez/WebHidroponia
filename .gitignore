@@ -1,3 +1,6 @@
 data/runtime-state.json
+plcnext.local.json
+hydrovision-live.*.log
+firmware/**/secrets.h
 __pycache__/
 *.pyc
