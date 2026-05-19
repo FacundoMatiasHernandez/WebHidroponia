@@ -326,6 +326,10 @@ h1 {
   aspect-ratio: 16 / 9;
 }
 
+.camera-frame[data-mode="mjpeg"] {
+  aspect-ratio: 4 / 3;
+}
+
 .camera-frame canvas,
 .camera-media {
   display: block;
@@ -333,9 +337,20 @@ h1 {
   height: 100%;
 }
 
+.camera-frame canvas[hidden],
+.camera-media[hidden],
+.camera-frame__fallback[hidden] {
+  display: none;
+}
+
 .camera-media {
   object-fit: cover;
   border: 0;
+}
+
+.camera-frame[data-mode="mjpeg"] .camera-media {
+  object-fit: contain;
+  background: #050b0a;
 }
 
 .camera-frame__fallback {

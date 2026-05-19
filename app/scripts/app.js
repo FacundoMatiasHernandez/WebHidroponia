@@ -28,6 +28,7 @@
   const cameraImage = document.getElementById("cameraImage");
   const cameraEmbed = document.getElementById("cameraEmbed");
   const cameraFallback = document.getElementById("cameraFallback");
+  const cameraFrame = document.querySelector(".camera-frame");
   const cameraTimestamp = document.getElementById("cameraTimestamp");
   const cameraSourceLabel = document.getElementById("cameraSourceLabel");
   const cameraBadge = document.getElementById("cameraBadge");
@@ -615,6 +616,10 @@
     const mode = cameraConfig.mode || "mock";
 
     currentCameraMode = mode;
+    if (cameraFrame) {
+      cameraFrame.dataset.mode = mode;
+    }
+
     cameraBadge.textContent = cameraConfig.badge || describeCameraBadge(mode);
     cameraSourceLabel.textContent = cameraConfig.label || "LOGI C922 / Raspberry Pi";
     cameraNote.textContent = cameraConfig.note || "Esta vista usa una simulación visual. El contenedor queda listo para recibir MJPEG, HLS o WebRTC desde la Raspberry.";

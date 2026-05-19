@@ -1,4 +1,5 @@
 ﻿const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
@@ -13,6 +14,8 @@ const HISTORY_SIZE = 40;
 const LIVE_STALE_MS = 15000;
 const DEFAULT_LIVE_SOURCE = "plcnext-node-red";
 const INGEST_TOKEN = process.env.INGEST_TOKEN || "";
+const CAMERA_STREAM_PROXY_PATH = "/api/camera/stream";
+const CAMERA_CAPTURE_PROXY_PATH = "/api/camera/capture";
 const CAMERA_CONFIG = readCameraConfig();
 
 const sensors = [
@@ -72,11 +75,28 @@ function formatCameraHost(value) {
   }
 }
 
+function deriveEsp32CaptureUrl(mjpegUrl) {
+  try {
+    const target = new URL(mjpegUrl);
+    target.pathname = "/capture";
+    target.search = "";
+
+    if (target.port === "81") {
+      target.port = "";
+    }
+
+    return target.toString();
+  } catch {
+    return "";
+  }
+}
+
 function readCameraConfig() {
   const requestedMode = typeof process.env.CAMERA_MODE === "string"
     ? process.env.CAMERA_MODE.trim().toLowerCase()
     : "";
   const mjpegUrl = normalizeUrl(process.env.CAMERA_MJPEG_URL);
+  const captureUrl = normalizeUrl(process.env.CAMERA_CAPTURE_URL) || deriveEsp32CaptureUrl(mjpegUrl);
   const embedUrl = normalizeUrl(process.env.CAMERA_EMBED_URL);
   const label = typeof process.env.CAMERA_LABEL === "string" && process.env.CAMERA_LABEL.trim()
     ? process.env.CAMERA_LABEL.trim()
@@ -97,8 +117,11 @@ function readCameraConfig() {
       mode: "mjpeg",
       badge: "MJPEG en vivo",
       label,
-      streamUrl: mjpegUrl,
-      note: `La vista consume un stream MJPEG directo desde ${formatCameraHost(mjpegUrl)}.`
+      streamUrl: CAMERA_STREAM_PROXY_PATH,
+      captureUrl: captureUrl ? CAMERA_CAPTURE_PROXY_PATH : "",
+      upstreamStreamUrl: mjpegUrl,
+      upstreamCaptureUrl: captureUrl,
+      note: `La vista consume un stream MJPEG mediante proxy local desde ${formatCameraHost(mjpegUrl)}.`
     };
   }
 
@@ -430,6 +453,7 @@ function buildServices() {
   const criticalCount = Object.values(state.snapshot).filter((entry) => entry.status === "critical").length;
   const liveAgeMs = getLiveAgeMs();
   const liveConnected = !isMockMode() && liveAgeMs <= LIVE_STALE_MS;
+  const cameraHost = CAMERA_CONFIG.upstreamStreamUrl || CAMERA_CONFIG.streamUrl || CAMERA_CONFIG.embedUrl;
   const cameraService = CAMERA_CONFIG.mode === "mock"
     ? {
         id: "camera",
@@ -442,7 +466,7 @@ function buildServices() {
         label: "Canal de cámara",
         status: "online",
         detail: CAMERA_CONFIG.mode === "mjpeg"
-          ? `Stream MJPEG configurado en ${formatCameraHost(CAMERA_CONFIG.streamUrl)}`
+          ? `Stream MJPEG configurado en ${formatCameraHost(cameraHost)}`
           : `Reproductor externo configurado en ${formatCameraHost(CAMERA_CONFIG.embedUrl)}`
       };
 
@@ -723,6 +747,97 @@ function sendJson(response, statusCode, payload) {
   response.end(data);
 }
 
+function proxyCameraResource(response, upstreamUrl, options = {}) {
+  if (!upstreamUrl) {
+    sendJson(response, 404, { error: "Camera resource not configured" });
+    return;
+  }
+
+  let target;
+  try {
+    target = new URL(upstreamUrl);
+  } catch {
+    sendJson(response, 500, { error: "Invalid camera URL" });
+    return;
+  }
+
+  const transport = target.protocol === "https:" ? https : http;
+  const upstreamRequest = transport.request(target, {
+    method: "GET",
+    timeout: options.timeoutMs || 8000,
+    headers: {
+      Accept: options.accept || "*/*"
+    }
+  }, (upstreamResponse) => {
+    const statusCode = upstreamResponse.statusCode || 502;
+
+    if (statusCode < 200 || statusCode >= 300) {
+      upstreamResponse.resume();
+      sendJson(response, 502, { error: `Camera upstream HTTP ${statusCode}` });
+      return;
+    }
+
+    const headers = {
+      "Content-Type": upstreamResponse.headers["content-type"] || options.contentType || "application/octet-stream",
+      "Cache-Control": options.stream ? "no-store, no-cache, no-transform" : "no-store",
+      "Access-Control-Allow-Origin": "*"
+    };
+
+    if (options.stream) {
+      headers.Connection = "close";
+    } else if (upstreamResponse.headers["content-length"]) {
+      headers["Content-Length"] = upstreamResponse.headers["content-length"];
+    }
+
+    response.writeHead(200, headers);
+    upstreamResponse.pipe(response);
+  });
+
+  upstreamRequest.on("timeout", () => {
+    upstreamRequest.destroy(new Error("Timeout opening camera resource"));
+  });
+
+  upstreamRequest.on("error", (error) => {
+    if (!response.headersSent) {
+      sendJson(response, 502, { error: error.message });
+      return;
+    }
+
+    response.destroy(error);
+  });
+
+  response.on("close", () => {
+    upstreamRequest.destroy();
+  });
+
+  upstreamRequest.end();
+}
+
+function proxyCameraStream(response) {
+  if (CAMERA_CONFIG.mode !== "mjpeg") {
+    sendJson(response, 404, { error: "Camera stream not configured" });
+    return;
+  }
+
+  proxyCameraResource(response, CAMERA_CONFIG.upstreamStreamUrl, {
+    stream: true,
+    contentType: "multipart/x-mixed-replace",
+    accept: "multipart/x-mixed-replace,image/jpeg,*/*"
+  });
+}
+
+function proxyCameraCapture(response) {
+  if (CAMERA_CONFIG.mode !== "mjpeg") {
+    sendJson(response, 404, { error: "Camera capture not configured" });
+    return;
+  }
+
+  proxyCameraResource(response, CAMERA_CONFIG.upstreamCaptureUrl, {
+    contentType: "image/jpeg",
+    accept: "image/jpeg,*/*"
+  });
+}
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -797,6 +912,16 @@ const server = http.createServer(async (request, response) => {
   try {
     const host = request.headers.host || `localhost:${PORT}`;
     const url = new URL(request.url || "/", `http://${host}`);
+
+    if (request.method === "GET" && url.pathname === CAMERA_STREAM_PROXY_PATH) {
+      proxyCameraStream(response);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === CAMERA_CAPTURE_PROXY_PATH) {
+      proxyCameraCapture(response);
+      return;
+    }
 
     if (request.method === "GET" && url.pathname === "/api/health") {
       sendJson(response, 200, {

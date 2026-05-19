@@ -1,0 +1,5 @@
+profiles:
+  ai-thinker:
+    fqbn: esp32:esp32:esp32cam
+    platforms:
+      - platform: esp32:esp32 (3.3.8)
