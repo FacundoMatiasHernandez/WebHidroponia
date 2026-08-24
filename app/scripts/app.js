@@ -29,6 +29,11 @@
   const cameraEmbed = document.getElementById("cameraEmbed");
   const cameraFallback = document.getElementById("cameraFallback");
   const cameraFrame = document.querySelector(".camera-frame");
+  const cameraToolbar = document.getElementById("cameraToolbar");
+  const cameraModeToggle = document.getElementById("cameraModeToggle");
+  const cameraRefreshSnapshot = document.getElementById("cameraRefreshSnapshot");
+  const cameraZoomToggle = document.getElementById("cameraZoomToggle");
+  const cameraModeHint = document.getElementById("cameraModeHint");
   const cameraTimestamp = document.getElementById("cameraTimestamp");
   const cameraSourceLabel = document.getElementById("cameraSourceLabel");
   const cameraBadge = document.getElementById("cameraBadge");
@@ -45,8 +50,13 @@
   let initialized = false;
   let currentDataMode = "mock-backend";
   let currentCameraMode = "mock";
+  let currentCameraConfig = {};
+  let currentCameraViewMode = "snapshot";
+  let cameraSnapshotZoomed = false;
   let currentCameraClock = 0;
   let currentMockAnimation = 0;
+  let cameraRefreshTimer = 0;
+  let cameraSnapshotRefreshing = false;
   let localFallbackState = null;
   let localFallbackTimer = 0;
   let bootstrapRetryTimer = 0;
@@ -594,6 +604,84 @@
     cameraFallback.textContent = message;
   }
 
+  function stopCameraRefresh() {
+    if (!cameraRefreshTimer) {
+      return;
+    }
+
+    clearInterval(cameraRefreshTimer);
+    cameraRefreshTimer = 0;
+  }
+
+  function withCacheBust(url) {
+    if (!url) {
+      return "";
+    }
+
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}t=${Date.now()}`;
+  }
+
+  function describeRefresh(ms) {
+    if (ms >= 3600000 && ms % 3600000 === 0) {
+      const hours = ms / 3600000;
+      return `${hours} h`;
+    }
+
+    if (ms >= 60000 && ms % 60000 === 0) {
+      const minutes = ms / 60000;
+      return `${minutes} min`;
+    }
+
+    const seconds = Math.max(1, Math.round(ms / 1000));
+    return `${seconds} s`;
+  }
+
+  function setCameraControlsVisible(visible) {
+    if (!cameraToolbar) {
+      return;
+    }
+
+    cameraToolbar.hidden = !visible;
+  }
+
+  function setSnapshotRefreshVisible(visible) {
+    if (!cameraRefreshSnapshot) {
+      return;
+    }
+
+    cameraRefreshSnapshot.hidden = !visible;
+  }
+
+  function setSnapshotZoomVisible(visible) {
+    if (!cameraZoomToggle) {
+      return;
+    }
+
+    cameraZoomToggle.hidden = !visible;
+  }
+
+  function applySnapshotZoom() {
+    if (cameraFrame) {
+      cameraFrame.dataset.zoom = cameraSnapshotZoomed ? "true" : "false";
+    }
+
+    if (cameraZoomToggle) {
+      cameraZoomToggle.textContent = cameraSnapshotZoomed ? "Ver encuadre" : "Ampliar imagen";
+    }
+  }
+
+  function setSnapshotRefreshBusy(isBusy) {
+    cameraSnapshotRefreshing = isBusy;
+
+    if (!cameraRefreshSnapshot) {
+      return;
+    }
+
+    cameraRefreshSnapshot.disabled = isBusy;
+    cameraRefreshSnapshot.textContent = isBusy ? "Actualizando..." : "Actualizar imagen HD";
+  }
+
   function setMediaSource(element, nextSource) {
     const currentSource = element.dataset.src || "";
     const normalizedSource = nextSource || "";
@@ -611,13 +699,87 @@
     element.removeAttribute("src");
   }
 
+  function refreshCameraSnapshot(manual = false) {
+    if (currentCameraMode !== "mjpeg" || currentCameraViewMode !== "snapshot") {
+      return;
+    }
+
+    if (!currentCameraConfig.captureUrl) {
+      setMediaSource(cameraImage, "");
+      showCameraFallback("No hay una URL de captura configurada en el backend.");
+      return;
+    }
+
+    if (manual || !cameraImage.dataset.src) {
+      setSnapshotRefreshBusy(true);
+    }
+
+    setMediaSource(cameraImage, withCacheBust(currentCameraConfig.captureUrl));
+  }
+
+  function renderCameraSnapshot(cameraConfig) {
+    const refreshMs = cameraConfig.captureRefreshMs || 5000;
+    const stillLabel = cameraConfig.stillProfile?.label || "alta calidad";
+
+    setMediaSource(cameraEmbed, "");
+    cameraBadge.textContent = "Imagen HD";
+    setSnapshotRefreshVisible(true);
+    setSnapshotZoomVisible(true);
+    applySnapshotZoom();
+    if (cameraModeToggle) {
+      cameraModeToggle.textContent = "Ver video en vivo";
+    }
+
+    if (cameraModeHint) {
+      cameraModeHint.textContent = `Imagen ${stillLabel}, actualizada cada ${describeRefresh(refreshMs)}`;
+    }
+
+    if (!cameraRefreshTimer) {
+      refreshCameraSnapshot();
+      cameraRefreshTimer = setInterval(refreshCameraSnapshot, refreshMs);
+    }
+  }
+
+  function renderCameraVideo(cameraConfig) {
+    const videoLabel = cameraConfig.videoProfile?.label || "MJPEG";
+
+    stopCameraRefresh();
+    cameraBadge.textContent = "MJPEG en vivo";
+    setSnapshotRefreshVisible(false);
+    setSnapshotZoomVisible(false);
+    cameraSnapshotZoomed = false;
+    applySnapshotZoom();
+    setSnapshotRefreshBusy(false);
+    if (cameraModeToggle) {
+      cameraModeToggle.textContent = "Ver imagen HD";
+    }
+
+    if (cameraModeHint) {
+      cameraModeHint.textContent = `Video en tiempo real, perfil ${videoLabel}`;
+    }
+
+    setMediaSource(cameraEmbed, "");
+
+    if (!cameraConfig.streamUrl) {
+      setMediaSource(cameraImage, "");
+      showCameraFallback("No hay una URL MJPEG configurada en el backend.");
+      return;
+    }
+
+    setMediaSource(cameraImage, cameraConfig.streamUrl);
+    cameraTimestamp.textContent = formatClock(new Date());
+  }
+
   function renderCamera(camera) {
     const cameraConfig = camera && typeof camera === "object" ? camera : {};
     const mode = cameraConfig.mode || "mock";
 
     currentCameraMode = mode;
+    currentCameraConfig = cameraConfig;
     if (cameraFrame) {
       cameraFrame.dataset.mode = mode;
+      cameraFrame.dataset.view = currentCameraViewMode;
+      cameraFrame.dataset.zoom = cameraSnapshotZoomed ? "true" : "false";
     }
 
     cameraBadge.textContent = cameraConfig.badge || describeCameraBadge(mode);
@@ -632,22 +794,35 @@
     if (mode === "mjpeg") {
       stopMockCamera();
       ensureCameraClock();
-      setMediaSource(cameraEmbed, "");
+      setCameraControlsVisible(true);
 
-      if (!cameraConfig.streamUrl) {
-        setMediaSource(cameraImage, "");
-        showCameraFallback("No hay una URL MJPEG configurada en el backend.");
+      if (!cameraConfig.captureUrl && currentCameraViewMode === "snapshot") {
+        currentCameraViewMode = "video";
+      }
+
+      if (cameraFrame) {
+        cameraFrame.dataset.view = currentCameraViewMode;
+      }
+
+      if (currentCameraViewMode === "video") {
+        renderCameraVideo(cameraConfig);
         return;
       }
 
-      setMediaSource(cameraImage, cameraConfig.streamUrl);
-      cameraTimestamp.textContent = formatClock(new Date());
+      renderCameraSnapshot(cameraConfig);
       return;
     }
 
     if (mode === "embed") {
       stopMockCamera();
+      stopCameraRefresh();
       ensureCameraClock();
+      setCameraControlsVisible(false);
+      setSnapshotRefreshVisible(false);
+      setSnapshotZoomVisible(false);
+      cameraSnapshotZoomed = false;
+      applySnapshotZoom();
+      setSnapshotRefreshBusy(false);
       setMediaSource(cameraImage, "");
 
       if (!cameraConfig.embedUrl) {
@@ -662,6 +837,13 @@
     }
 
     stopCameraClock();
+    stopCameraRefresh();
+    setCameraControlsVisible(false);
+    setSnapshotRefreshVisible(false);
+    setSnapshotZoomVisible(false);
+    cameraSnapshotZoomed = false;
+    applySnapshotZoom();
+    setSnapshotRefreshBusy(false);
     setMediaSource(cameraImage, "");
     setMediaSource(cameraEmbed, "");
     startMockCamera();
@@ -762,12 +944,45 @@
     await fetch("/api/control/inject-critical", { method: "POST" });
   });
 
+  if (cameraModeToggle) {
+    cameraModeToggle.addEventListener("click", () => {
+      if (currentCameraMode !== "mjpeg") {
+        return;
+      }
+
+      currentCameraViewMode = currentCameraViewMode === "video" ? "snapshot" : "video";
+      renderCamera(currentCameraConfig);
+    });
+  }
+
+  if (cameraRefreshSnapshot) {
+    cameraRefreshSnapshot.addEventListener("click", () => {
+      if (currentCameraMode !== "mjpeg" || currentCameraViewMode !== "snapshot" || cameraSnapshotRefreshing) {
+        return;
+      }
+
+      refreshCameraSnapshot(true);
+    });
+  }
+
+  if (cameraZoomToggle) {
+    cameraZoomToggle.addEventListener("click", () => {
+      if (currentCameraMode !== "mjpeg" || currentCameraViewMode !== "snapshot") {
+        return;
+      }
+
+      cameraSnapshotZoomed = !cameraSnapshotZoomed;
+      applySnapshotZoom();
+    });
+  }
+
   cameraImage.addEventListener("load", () => {
     if (currentCameraMode !== "mjpeg") {
       return;
     }
 
     hideCameraFallback();
+    setSnapshotRefreshBusy(false);
     cameraTimestamp.textContent = formatClock(new Date());
   });
 
@@ -776,7 +991,12 @@
       return;
     }
 
-    showCameraFallback("No se pudo abrir el stream MJPEG. Revisá la URL de la Raspberry y que el puerto sea accesible.");
+    const message = currentCameraViewMode === "snapshot"
+      ? "No se pudo actualizar la imagen HD. Revisá la conexión con la ESP32-CAM."
+      : "No se pudo abrir el stream MJPEG. Revisá la URL de la cámara y que el puerto sea accesible.";
+
+    showCameraFallback(message);
+    setSnapshotRefreshBusy(false);
   });
 
   cameraEmbed.addEventListener("load", () => {

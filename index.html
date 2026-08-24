@@ -65,6 +65,20 @@
           </div>
           <span id="cameraBadge" class="badge badge--dark">Mock stream</span>
         </div>
+        <div id="cameraToolbar" class="camera-toolbar" hidden>
+          <div class="camera-toolbar__actions">
+            <button id="cameraModeToggle" class="button button--ghost camera-toolbar__button" type="button">
+              Ver video en vivo
+            </button>
+            <button id="cameraRefreshSnapshot" class="button button--ghost camera-toolbar__button" type="button" hidden>
+              Actualizar imagen HD
+            </button>
+            <button id="cameraZoomToggle" class="button button--ghost camera-toolbar__button" type="button" hidden>
+              Ampliar imagen
+            </button>
+          </div>
+          <span id="cameraModeHint">Imagen HD cada pocos segundos</span>
+        </div>
         <div class="camera-frame">
           <canvas id="cameraCanvas" width="640" height="360" aria-label="Simulación de cámara de la huerta"></canvas>
           <img id="cameraImage" class="camera-media" alt="Video en vivo de la huerta" hidden>

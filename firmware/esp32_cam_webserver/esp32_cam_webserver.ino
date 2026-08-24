@@ -4,8 +4,8 @@
 #include "board_config.h"
 #include "secrets.h"
 
-const framesize_t STREAM_FRAME_SIZE = FRAMESIZE_UXGA;  // 1600x1200: max detail for a mostly still scene.
-const int STREAM_JPEG_QUALITY = 10;                    // Lower number = better image; 10 was the stable maximum.
+const framesize_t STREAM_FRAME_SIZE = FRAMESIZE_UXGA;  // 1600x1200: stable MJPEG profile.
+const int STREAM_JPEG_QUALITY = 10;                    // The web backend switches to QXGA for still captures.
 
 void startCameraServer();
 void setupLedFlash();

@@ -16,7 +16,31 @@ const DEFAULT_LIVE_SOURCE = "plcnext-node-red";
 const INGEST_TOKEN = process.env.INGEST_TOKEN || "";
 const CAMERA_STREAM_PROXY_PATH = "/api/camera/stream";
 const CAMERA_CAPTURE_PROXY_PATH = "/api/camera/capture";
+const CAMERA_CAPTURE_REFRESH_MS = parseEnvInt("CAMERA_CAPTURE_REFRESH_MS", 3600000);
+const CAMERA_STILL_PROFILE = {
+  framesize: parseEnvInt("CAMERA_STILL_FRAMESIZE", 19),
+  quality: parseEnvInt("CAMERA_STILL_QUALITY", 6),
+  label: process.env.CAMERA_STILL_LABEL || "QXGA 2048x1536 HQ",
+  settings: {
+    brightness: parseEnvInt("CAMERA_STILL_BRIGHTNESS", 0),
+    contrast: parseEnvInt("CAMERA_STILL_CONTRAST", 1),
+    saturation: parseEnvInt("CAMERA_STILL_SATURATION", 0),
+    ae_level: parseEnvInt("CAMERA_STILL_AE_LEVEL", -1)
+  }
+};
+const CAMERA_VIDEO_PROFILE = {
+  framesize: parseEnvInt("CAMERA_VIDEO_FRAMESIZE", 15),
+  quality: parseEnvInt("CAMERA_VIDEO_QUALITY", 10),
+  label: process.env.CAMERA_VIDEO_LABEL || "UXGA 1600x1200",
+  settings: {
+    brightness: parseEnvInt("CAMERA_VIDEO_BRIGHTNESS", 0),
+    contrast: parseEnvInt("CAMERA_VIDEO_CONTRAST", 1),
+    saturation: parseEnvInt("CAMERA_VIDEO_SATURATION", 0),
+    ae_level: parseEnvInt("CAMERA_VIDEO_AE_LEVEL", -1)
+  }
+};
 const CAMERA_CONFIG = readCameraConfig();
+let currentCameraProfileKey = "";
 
 const sensors = [
   { id: "air-humidity", label: "Humedad ambiente", unit: "%", decimals: 1, min: 45, max: 85, idealMin: 55, idealMax: 75, base: 67, step: 1.7, color: "#85d3a8", channel: "huerta/sensores/ambiente/humedad" },
@@ -31,6 +55,11 @@ const sensors = [
 
 const sensorById = new Map(sensors.map((sensor) => [sensor.id, sensor]));
 const sensorByChannel = new Map(sensors.map((sensor) => [sensor.channel, sensor]));
+
+function parseEnvInt(name, fallback) {
+  const parsed = Number.parseInt(process.env[name] || "", 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
 function normalizeUrl(value) {
   if (typeof value !== "string" || !value.trim()) {
@@ -75,10 +104,42 @@ function formatCameraHost(value) {
   }
 }
 
+function formatDuration(valueMs) {
+  if (valueMs >= 3600000 && valueMs % 3600000 === 0) {
+    const hours = valueMs / 3600000;
+    return `${hours} h`;
+  }
+
+  if (valueMs >= 60000 && valueMs % 60000 === 0) {
+    const minutes = valueMs / 60000;
+    return `${minutes} min`;
+  }
+
+  return `${Math.round(valueMs / 1000)} s`;
+}
+
 function deriveEsp32CaptureUrl(mjpegUrl) {
   try {
     const target = new URL(mjpegUrl);
     target.pathname = "/capture";
+    target.search = "";
+
+    if (target.port === "81") {
+      target.port = "";
+    }
+
+    return target.toString();
+  } catch {
+    return "";
+  }
+}
+
+function deriveEsp32ControlUrl(mjpegUrl, captureUrl) {
+  const value = captureUrl || mjpegUrl;
+
+  try {
+    const target = new URL(value);
+    target.pathname = "/control";
     target.search = "";
 
     if (target.port === "81") {
@@ -97,10 +158,11 @@ function readCameraConfig() {
     : "";
   const mjpegUrl = normalizeUrl(process.env.CAMERA_MJPEG_URL);
   const captureUrl = normalizeUrl(process.env.CAMERA_CAPTURE_URL) || deriveEsp32CaptureUrl(mjpegUrl);
+  const controlUrl = normalizeUrl(process.env.CAMERA_CONTROL_URL) || deriveEsp32ControlUrl(mjpegUrl, captureUrl);
   const embedUrl = normalizeUrl(process.env.CAMERA_EMBED_URL);
   const label = typeof process.env.CAMERA_LABEL === "string" && process.env.CAMERA_LABEL.trim()
     ? process.env.CAMERA_LABEL.trim()
-    : "Raspberry Pi 3 / USB camera";
+    : "ESP32-CAM OV3660";
 
   if ((requestedMode === "embed" && embedUrl) || (!requestedMode && embedUrl && !mjpegUrl)) {
     return {
@@ -115,13 +177,17 @@ function readCameraConfig() {
   if ((requestedMode === "mjpeg" && mjpegUrl) || (!requestedMode && mjpegUrl)) {
     return {
       mode: "mjpeg",
-      badge: "MJPEG en vivo",
+      badge: "Imagen HD",
       label,
       streamUrl: CAMERA_STREAM_PROXY_PATH,
       captureUrl: captureUrl ? CAMERA_CAPTURE_PROXY_PATH : "",
+      captureRefreshMs: CAMERA_CAPTURE_REFRESH_MS,
+      stillProfile: CAMERA_STILL_PROFILE,
+      videoProfile: CAMERA_VIDEO_PROFILE,
       upstreamStreamUrl: mjpegUrl,
       upstreamCaptureUrl: captureUrl,
-      note: `La vista consume un stream MJPEG mediante proxy local desde ${formatCameraHost(mjpegUrl)}.`
+      upstreamControlUrl: controlUrl,
+      note: `Modo imagen: ${CAMERA_STILL_PROFILE.label} cada ${formatDuration(CAMERA_CAPTURE_REFRESH_MS)}. Modo video: ${CAMERA_VIDEO_PROFILE.label} desde ${formatCameraHost(mjpegUrl)}.`
     };
   }
 
@@ -747,6 +813,79 @@ function sendJson(response, statusCode, payload) {
   response.end(data);
 }
 
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function requestCameraControl(variable, value) {
+  if (!CAMERA_CONFIG.upstreamControlUrl) {
+    return Promise.resolve(false);
+  }
+
+  let target;
+  try {
+    target = new URL(CAMERA_CONFIG.upstreamControlUrl);
+    target.searchParams.set("var", variable);
+    target.searchParams.set("val", String(value));
+  } catch {
+    return Promise.reject(new Error("Invalid camera control URL"));
+  }
+
+  const transport = target.protocol === "https:" ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const controlRequest = transport.request(target, {
+      method: "GET",
+      timeout: 5000
+    }, (controlResponse) => {
+      const statusCode = controlResponse.statusCode || 502;
+      controlResponse.resume();
+
+      if (statusCode < 200 || statusCode >= 300) {
+        reject(new Error(`Camera control HTTP ${statusCode}`));
+        return;
+      }
+
+      resolve(true);
+    });
+
+    controlRequest.on("timeout", () => {
+      controlRequest.destroy(new Error("Timeout configuring camera"));
+    });
+
+    controlRequest.on("error", reject);
+    controlRequest.end();
+  });
+}
+
+async function applyCameraProfile(profile) {
+  if (!profile || !CAMERA_CONFIG.upstreamControlUrl) {
+    return false;
+  }
+
+  const settings = profile.settings || {};
+  const settingKey = Object.entries(settings)
+    .map(([name, value]) => `${name}=${value}`)
+    .join(":");
+  const key = `${profile.framesize}:${profile.quality}:${settingKey}`;
+  if (currentCameraProfileKey === key) {
+    return false;
+  }
+
+  await requestCameraControl("framesize", profile.framesize);
+  await requestCameraControl("quality", profile.quality);
+
+  for (const [name, value] of Object.entries(settings)) {
+    await requestCameraControl(name, value);
+  }
+
+  currentCameraProfileKey = key;
+  await delay(500);
+  return true;
+}
+
 function proxyCameraResource(response, upstreamUrl, options = {}) {
   if (!upstreamUrl) {
     sendJson(response, 404, { error: "Camera resource not configured" });
@@ -813,28 +952,44 @@ function proxyCameraResource(response, upstreamUrl, options = {}) {
   upstreamRequest.end();
 }
 
-function proxyCameraStream(response) {
+async function proxyCameraStream(response) {
   if (CAMERA_CONFIG.mode !== "mjpeg") {
     sendJson(response, 404, { error: "Camera stream not configured" });
+    return;
+  }
+
+  try {
+    await applyCameraProfile(CAMERA_VIDEO_PROFILE);
+  } catch (error) {
+    sendJson(response, 502, { error: error.message });
     return;
   }
 
   proxyCameraResource(response, CAMERA_CONFIG.upstreamStreamUrl, {
     stream: true,
     contentType: "multipart/x-mixed-replace",
-    accept: "multipart/x-mixed-replace,image/jpeg,*/*"
+    accept: "multipart/x-mixed-replace,image/jpeg,*/*",
+    timeoutMs: 20000
   });
 }
 
-function proxyCameraCapture(response) {
+async function proxyCameraCapture(response) {
   if (CAMERA_CONFIG.mode !== "mjpeg") {
     sendJson(response, 404, { error: "Camera capture not configured" });
     return;
   }
 
+  try {
+    await applyCameraProfile(CAMERA_STILL_PROFILE);
+  } catch (error) {
+    sendJson(response, 502, { error: error.message });
+    return;
+  }
+
   proxyCameraResource(response, CAMERA_CONFIG.upstreamCaptureUrl, {
     contentType: "image/jpeg",
-    accept: "image/jpeg,*/*"
+    accept: "image/jpeg,*/*",
+    timeoutMs: 30000
   });
 }
 
@@ -914,12 +1069,12 @@ const server = http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${host}`);
 
     if (request.method === "GET" && url.pathname === CAMERA_STREAM_PROXY_PATH) {
-      proxyCameraStream(response);
+      await proxyCameraStream(response);
       return;
     }
 
     if (request.method === "GET" && url.pathname === CAMERA_CAPTURE_PROXY_PATH) {
-      proxyCameraCapture(response);
+      await proxyCameraCapture(response);
       return;
     }
 
