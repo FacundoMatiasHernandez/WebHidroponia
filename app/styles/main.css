@@ -438,6 +438,57 @@ h1 {
   animation: none;
 }
 
+.plant-vision {
+  display: grid;
+  gap: 16px;
+}
+
+.plant-vision__metrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.plant-vision__metrics article {
+  min-width: 0;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.plant-vision__metrics span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-bottom: 8px;
+}
+
+.plant-vision__metrics strong {
+  display: block;
+  font-size: clamp(1.2rem, 2vw, 1.55rem);
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.plant-vision__status--ok {
+  color: var(--ok);
+  border-color: rgba(107, 229, 170, 0.28);
+  background: rgba(107, 229, 170, 0.1);
+}
+
+.plant-vision__status--warning {
+  color: var(--warning);
+  border-color: rgba(255, 197, 92, 0.28);
+  background: rgba(255, 197, 92, 0.1);
+}
+
+.plant-vision__status--attention {
+  color: var(--danger);
+  border-color: rgba(255, 127, 110, 0.28);
+  background: rgba(255, 127, 110, 0.1);
+}
+
 .alarm-list {
   list-style: none;
   padding: 0;
@@ -625,5 +676,9 @@ h1 {
 
   .panel__header {
     flex-direction: column;
+  }
+
+  .plant-vision__metrics {
+    grid-template-columns: 1fr;
   }
 }

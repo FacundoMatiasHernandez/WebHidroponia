@@ -6,7 +6,7 @@ Arquitectura final actual:
 ESP32 con sensores -> POST /api/ingest/batch -> backend Node -> dashboard web
 ```
 
-El backend ya tiene el endpoint `POST /api/ingest/batch`; no hace falta PLC ni puente intermedio.
+El backend ya tiene el endpoint `POST /api/ingest/batch` para recibir lecturas directas.
 
 Payload minimo:
 

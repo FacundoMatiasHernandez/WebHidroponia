@@ -41,7 +41,7 @@ Preparacion del sketch:
 Variables opcionales del servidor:
 
 - `CAMERA_STILL_FRAMESIZE=19`
-- `CAMERA_STILL_QUALITY=6`
+- `CAMERA_STILL_QUALITY=4`
 - `CAMERA_VIDEO_FRAMESIZE=15`
 - `CAMERA_VIDEO_QUALITY=10`
 - `CAMERA_CAPTURE_REFRESH_MS=3600000`
@@ -52,7 +52,7 @@ Variables opcionales del servidor:
 
 Notas de calidad:
 
-- `FRAMESIZE_QXGA` con `quality=6` fue estable para captura fija.
-- `quality=4` daba aun menos compresion, pero la camara respondia con errores `500`.
+- `FRAMESIZE_QXGA` con `quality=4` fue estable para captura fija y reduce la compresion.
+- `quality=3` daba aun menos compresion, pero la camara respondia con errores `500`.
 - `FRAMESIZE_FHD` y `FRAMESIZE_QXGA` no fueron estables para MJPEG continuo en la placa probada.
 - La mejora mas grande fuera del codigo suele venir de buena iluminacion, foco manual del lente y WiFi estable.

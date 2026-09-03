@@ -1,6 +1,6 @@
 # ESP32 directo a WebHidroponia
 
-Este firmware envia lecturas reales de sensores al backend web sin PLC intermedio.
+Este firmware envia lecturas reales de sensores al backend web.
 
 Flujo:
 

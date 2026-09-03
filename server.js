@@ -8,18 +8,21 @@ const PORT = process.env.PORT || 4173;
 const APP_DIR = __dirname;
 const DATA_DIR = path.join(APP_DIR, "data");
 const RUNTIME_FILE = path.join(DATA_DIR, "runtime-state.json");
+const PLANT_CAPTURE_DIR = path.join(DATA_DIR, "plant-captures");
+const PLANT_CAPTURE_ROUTE = "/api/plant-vision/images/";
+const PLANT_VISION_HISTORY_SIZE = 40;
 const CLIENTS = new Set();
 const TICK_INTERVAL_MS = 2000;
 const HISTORY_SIZE = 40;
 const LIVE_STALE_MS = 15000;
-const DEFAULT_LIVE_SOURCE = "plcnext-node-red";
+const DEFAULT_LIVE_SOURCE = "esp32-direct";
 const INGEST_TOKEN = process.env.INGEST_TOKEN || "";
 const CAMERA_STREAM_PROXY_PATH = "/api/camera/stream";
 const CAMERA_CAPTURE_PROXY_PATH = "/api/camera/capture";
 const CAMERA_CAPTURE_REFRESH_MS = parseEnvInt("CAMERA_CAPTURE_REFRESH_MS", 3600000);
 const CAMERA_STILL_PROFILE = {
   framesize: parseEnvInt("CAMERA_STILL_FRAMESIZE", 19),
-  quality: parseEnvInt("CAMERA_STILL_QUALITY", 6),
+  quality: parseEnvInt("CAMERA_STILL_QUALITY", 4),
   label: process.env.CAMERA_STILL_LABEL || "QXGA 2048x1536 HQ",
   settings: {
     brightness: parseEnvInt("CAMERA_STILL_BRIGHTNESS", 0),
@@ -194,8 +197,8 @@ function readCameraConfig() {
   return {
     mode: "mock",
     badge: "Mock stream",
-    label: "LOGI C922 / Raspberry Pi",
-    note: "Esta vista usa una simulación visual. Configurá CAMERA_MJPEG_URL o CAMERA_EMBED_URL para conectar la Raspberry."
+    label: "ESP32-CAM OV3660",
+    note: "Esta vista usa una simulación visual. Configurá CAMERA_MJPEG_URL o CAMERA_EMBED_URL para conectar la ESP32-CAM."
   };
 }
 
@@ -301,7 +304,11 @@ function seedState() {
       lastIngestAt: null
     },
     manualOverrides: {},
-    remoteActuators: []
+    remoteActuators: [],
+    plantVision: {
+      latest: null,
+      history: []
+    }
   };
 }
 
@@ -322,7 +329,7 @@ function normalizeActuator(actuator, index) {
     id,
     label: repairText(label),
     active,
-    detail: typeof actuator.detail === "string" && actuator.detail ? repairText(actuator.detail) : "Estado informado por PLC / Node-RED",
+    detail: typeof actuator.detail === "string" && actuator.detail ? repairText(actuator.detail) : "Estado informado por el backend",
     mode: typeof actuator.mode === "string" && actuator.mode ? actuator.mode : "remote"
   };
 }
@@ -372,7 +379,22 @@ function normalizeState(input) {
     manualOverrides: source.manualOverrides && typeof source.manualOverrides === "object" ? source.manualOverrides : {},
     remoteActuators: Array.isArray(source.remoteActuators)
       ? source.remoteActuators.map(normalizeActuator).filter(Boolean)
-      : []
+      : [],
+    plantVision: normalizePlantVision(source.plantVision)
+  };
+}
+
+function normalizePlantVision(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const history = Array.isArray(source.history)
+    ? source.history
+        .filter((entry) => entry && typeof entry === "object" && typeof entry.timestamp === "string")
+        .slice(-PLANT_VISION_HISTORY_SIZE)
+    : [];
+
+  return {
+    latest: source.latest && typeof source.latest === "object" ? source.latest : history[history.length - 1] || null,
+    history
   };
 }
 
@@ -525,7 +547,7 @@ function buildServices() {
         id: "camera",
         label: "Canal de cámara",
         status: "pending",
-        detail: "Usando simulación local hasta conectar la Raspberry"
+        detail: "Usando simulación local hasta conectar la ESP32-CAM"
       }
     : {
         id: "camera",
@@ -547,19 +569,19 @@ function buildServices() {
         : "Desactivado por ingesta real"
     },
     {
-      id: "plcnext",
-      label: "PLCnext bridge",
+      id: "sensor-ingest",
+      label: "Ingesta ESP32-S3",
       status: isMockMode() ? "pending" : (liveConnected ? "online" : "attention"),
       detail: isMockMode()
-        ? "Esperando datos reales del PLC"
+        ? "Esperando datos reales de la ESP32-S3"
         : (liveConnected ? `Fuente ${state.meta.dataMode} conectada` : `Sin datos recientes (${formatAge(liveAgeMs)})`)
     },
     {
-      id: "mqtt",
-      label: "MQTT gateway",
+      id: "http-ingest",
+      label: "HTTP ingest",
       status: isMockMode() ? "pending" : (liveConnected ? "online" : "attention"),
       detail: isMockMode()
-        ? "Esperando publicaciones MQTT"
+        ? "Esperando publicaciones HTTP"
         : `Última ingesta hace ${formatAge(liveAgeMs)}`
     },
     cameraService,
@@ -589,7 +611,8 @@ function getPublicState() {
     actuators: state.actuators,
     services: state.services,
     meta: state.meta,
-    camera: CAMERA_CONFIG
+    camera: CAMERA_CONFIG,
+    plantVision: state.plantVision || { latest: null, history: [] }
   };
 }
 
@@ -952,6 +975,129 @@ function proxyCameraResource(response, upstreamUrl, options = {}) {
   upstreamRequest.end();
 }
 
+function fetchCameraBuffer(upstreamUrl, options = {}) {
+  if (!upstreamUrl) {
+    return Promise.reject(new Error("Camera resource not configured"));
+  }
+
+  let target;
+  try {
+    target = new URL(upstreamUrl);
+  } catch {
+    return Promise.reject(new Error("Invalid camera URL"));
+  }
+
+  const transport = target.protocol === "https:" ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const upstreamRequest = transport.request(target, {
+      method: "GET",
+      timeout: options.timeoutMs || 30000,
+      headers: {
+        Accept: options.accept || "image/jpeg,*/*"
+      }
+    }, (upstreamResponse) => {
+      const statusCode = upstreamResponse.statusCode || 502;
+      const chunks = [];
+
+      if (statusCode < 200 || statusCode >= 300) {
+        upstreamResponse.resume();
+        reject(new Error(`Camera upstream HTTP ${statusCode}`));
+        return;
+      }
+
+      upstreamResponse.on("data", (chunk) => {
+        chunks.push(chunk);
+      });
+
+      upstreamResponse.on("end", () => {
+        resolve({
+          buffer: Buffer.concat(chunks),
+          contentType: upstreamResponse.headers["content-type"] || "image/jpeg"
+        });
+      });
+    });
+
+    upstreamRequest.on("timeout", () => {
+      upstreamRequest.destroy(new Error("Timeout opening camera resource"));
+    });
+
+    upstreamRequest.on("error", reject);
+    upstreamRequest.end();
+  });
+}
+
+function toCaptureFileName(date = new Date()) {
+  const stamp = date.toISOString().replace(/[:.]/g, "-");
+  return `plant-${stamp}.jpg`;
+}
+
+async function capturePlantImage() {
+  if (CAMERA_CONFIG.mode !== "mjpeg") {
+    throw new Error("Camera capture not configured");
+  }
+
+  await applyCameraProfile(CAMERA_STILL_PROFILE);
+  const captured = await fetchCameraBuffer(CAMERA_CONFIG.upstreamCaptureUrl, {
+    accept: "image/jpeg,*/*",
+    timeoutMs: 30000
+  });
+  const capturedAt = new Date();
+  const fileName = toCaptureFileName(capturedAt);
+  const filePath = path.join(PLANT_CAPTURE_DIR, fileName);
+
+  fs.mkdirSync(PLANT_CAPTURE_DIR, { recursive: true });
+  fs.writeFileSync(filePath, captured.buffer);
+
+  return {
+    fileName,
+    imageUrl: `${PLANT_CAPTURE_ROUTE}${fileName}`,
+    capturedAt: capturedAt.toISOString(),
+    bytes: captured.buffer.length,
+    contentType: captured.contentType
+  };
+}
+
+function savePlantVisionAnalysis(analysis) {
+  const current = state.plantVision || { latest: null, history: [] };
+  const entry = {
+    ...analysis,
+    timestamp: typeof analysis.timestamp === "string" ? analysis.timestamp : new Date().toISOString()
+  };
+
+  state.plantVision = {
+    latest: entry,
+    history: [...(current.history || []), entry].slice(-PLANT_VISION_HISTORY_SIZE)
+  };
+  persistState();
+  broadcast();
+  return entry;
+}
+
+function servePlantCapture(requestPath, response) {
+  const fileName = path.basename(decodeURIComponent(requestPath.slice(PLANT_CAPTURE_ROUTE.length)));
+  const filePath = path.join(PLANT_CAPTURE_DIR, fileName);
+
+  if (!fileName || !filePath.startsWith(PLANT_CAPTURE_DIR)) {
+    sendJson(response, 403, { error: "Forbidden" });
+    return;
+  }
+
+  fs.readFile(filePath, (error, content) => {
+    if (error) {
+      sendJson(response, 404, { error: "Image not found" });
+      return;
+    }
+
+    response.writeHead(200, {
+      "Content-Type": "image/jpeg",
+      "Content-Length": content.length,
+      "Cache-Control": "no-store"
+    });
+    response.end(content);
+  });
+}
+
 async function proxyCameraStream(response) {
   if (CAMERA_CONFIG.mode !== "mjpeg") {
     sendJson(response, 404, { error: "Camera stream not configured" });
@@ -1078,6 +1224,11 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && url.pathname.startsWith(PLANT_CAPTURE_ROUTE)) {
+      servePlantCapture(url.pathname, response);
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/health") {
       sendJson(response, 200, {
         ok: true,
@@ -1137,6 +1288,23 @@ const server = http.createServer(async (request, response) => {
         dataMode: state.meta.dataMode,
         updatedAt: state.meta.updatedAt
       });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/plant-vision/capture") {
+      try {
+        const capture = await capturePlantImage();
+        sendJson(response, 200, { ok: true, capture });
+      } catch (error) {
+        sendJson(response, 502, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/plant-vision/analysis") {
+      const body = await parseBody(request);
+      const entry = savePlantVisionAnalysis(body);
+      sendJson(response, 200, { ok: true, analysis: entry });
       return;
     }
 

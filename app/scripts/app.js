@@ -41,6 +41,13 @@
   const actuatorGrid = document.getElementById("actuatorGrid");
   const serviceList = document.getElementById("serviceList");
   const serviceCounter = document.getElementById("serviceCounter");
+  const plantVisionAnalyze = document.getElementById("plantVisionAnalyze");
+  const plantVisionStatus = document.getElementById("plantVisionStatus");
+  const plantVisionArea = document.getElementById("plantVisionArea");
+  const plantVisionGrowth = document.getElementById("plantVisionGrowth");
+  const plantVisionSpots = document.getElementById("plantVisionSpots");
+  const plantVisionDetail = document.getElementById("plantVisionDetail");
+  const plantVisionCanvas = document.getElementById("plantVisionCanvas");
 
   const cardMap = new Map();
   const chartMap = new Map();
@@ -60,6 +67,8 @@
   let localFallbackState = null;
   let localFallbackTimer = 0;
   let bootstrapRetryTimer = 0;
+  let currentPlantVision = { latest: null, history: [] };
+  let plantVisionBusy = false;
 
   function isMockMode() {
     return currentDataMode === "mock-backend";
@@ -68,10 +77,6 @@
   function describeDataMode(mode) {
     if (mode === "mock-backend") {
       return "Backend mock";
-    }
-
-    if (mode === "plcnext-node-red") {
-      return "PLCnext + Node-RED";
     }
 
     return mode;
@@ -186,9 +191,9 @@
     return [
       { id: "api", label: "API Node", status: "attention", detail: "Backend no disponible, usando mock local" },
       { id: "mock", label: "Generador mock", status: "online", detail: "Emitiendo muestras locales cada 2 segundos" },
-      { id: "plcnext", label: "PLCnext bridge", status: "pending", detail: "Esperando datos reales del PLC" },
-      { id: "mqtt", label: "MQTT gateway", status: "pending", detail: "Esperando publicaciones MQTT" },
-      { id: "camera", label: "Canal de cámara", status: "pending", detail: "Usando simulación local hasta conectar la Raspberry" },
+      { id: "sensor-ingest", label: "Ingesta ESP32-S3", status: "pending", detail: "Esperando datos reales de la ESP32-S3" },
+      { id: "http-ingest", label: "HTTP ingest", status: "pending", detail: "Esperando publicaciones HTTP" },
+      { id: "camera", label: "Canal de cámara", status: "pending", detail: "Usando simulación local hasta conectar la ESP32-CAM" },
       {
         id: "alerts",
         label: "Motor de alarmas",
@@ -236,8 +241,12 @@
       camera: {
         mode: "mock",
         badge: "Mock stream",
-        label: "LOGI C922 / Raspberry Pi",
-        note: "Esta vista usa una simulación visual. El contenedor queda listo para recibir MJPEG, HLS o WebRTC desde la Raspberry."
+        label: "ESP32-CAM OV3660",
+        note: "Esta vista puede usar simulación o imagen real desde la ESP32-CAM configurada en el backend."
+      },
+      plantVision: {
+        latest: null,
+        history: []
       }
     };
   }
@@ -344,7 +353,7 @@
         </div>
         <div class="sensor-card__meta">
           <span class="trend"></span>
-          <span>Canal MQTT</span>
+          <span>Canal HTTP</span>
         </div>
         <div class="mini-meter"><span></span></div>
       `;
@@ -461,7 +470,7 @@
     badge.textContent = `${actuator.mode} / ${actuator.active ? "activo" : "apagado"}`;
     button.textContent = mockMode ? (actuator.active ? "Apagar" : "Encender") : "Solo lectura";
     button.disabled = !mockMode;
-    button.title = mockMode ? "" : "En modo real, el control debe venir desde PLC / Node-RED.";
+    button.title = mockMode ? "" : "En modo real, el control debe venir desde el firmware o el backend.";
     detail.textContent = actuator.detail;
   }
 
@@ -783,8 +792,8 @@
     }
 
     cameraBadge.textContent = cameraConfig.badge || describeCameraBadge(mode);
-    cameraSourceLabel.textContent = cameraConfig.label || "LOGI C922 / Raspberry Pi";
-    cameraNote.textContent = cameraConfig.note || "Esta vista usa una simulación visual. El contenedor queda listo para recibir MJPEG, HLS o WebRTC desde la Raspberry.";
+    cameraSourceLabel.textContent = cameraConfig.label || "ESP32-CAM OV3660";
+    cameraNote.textContent = cameraConfig.note || "Esta vista puede usar simulación o imagen real desde la ESP32-CAM configurada en el backend.";
 
     cameraCanvas.hidden = mode !== "mock";
     cameraImage.hidden = mode !== "mjpeg";
@@ -849,6 +858,265 @@
     startMockCamera();
   }
 
+  function toPercent(value, decimals = 1) {
+    if (!Number.isFinite(value)) {
+      return "--";
+    }
+
+    return `${value.toFixed(decimals)}%`;
+  }
+
+  function rgbToHsv(red, green, blue) {
+    const r = red / 255;
+    const g = green / 255;
+    const b = blue / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+    let hue = 0;
+
+    if (delta) {
+      if (max === r) {
+        hue = ((g - b) / delta) % 6;
+      } else if (max === g) {
+        hue = (b - r) / delta + 2;
+      } else {
+        hue = (r - g) / delta + 4;
+      }
+
+      hue *= 60;
+      if (hue < 0) {
+        hue += 360;
+      }
+    }
+
+    return {
+      hue,
+      saturation: max === 0 ? 0 : delta / max,
+      value: max
+    };
+  }
+
+  function classifyPlantVision(plantRatio, spotRatio, growthDelta) {
+    if (plantRatio < 1) {
+      return {
+        status: "attention",
+        label: "Sin hojas",
+        detail: "No se detectó suficiente vegetación en el encuadre."
+      };
+    }
+
+    if (spotRatio > 10 || growthDelta < -8) {
+      return {
+        status: "attention",
+        label: "Revisar",
+        detail: "Hay una variación fuerte o zonas atípicas cerca de la hoja."
+      };
+    }
+
+    if (spotRatio > 1.5 || growthDelta < -3) {
+      return {
+        status: "warning",
+        label: "Atención",
+        detail: "Se detectan pequeñas zonas sospechosas para seguir observando."
+      };
+    }
+
+    return {
+      status: "ok",
+      label: "Estable",
+      detail: "El área vegetal y el color se ven dentro de lo esperado."
+    };
+  }
+
+  function analyzePlantImage(image, capture, previous) {
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    const targetWidth = Math.min(640, sourceWidth);
+    const targetHeight = Math.round((targetWidth / sourceWidth) * sourceHeight);
+    const context = plantVisionCanvas.getContext("2d", { willReadFrequently: true });
+
+    plantVisionCanvas.width = targetWidth;
+    plantVisionCanvas.height = targetHeight;
+    context.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+    const pixels = context.getImageData(0, 0, targetWidth, targetHeight).data;
+    const blockSize = 16;
+    const blocksX = Math.ceil(targetWidth / blockSize);
+    const blocksY = Math.ceil(targetHeight / blockSize);
+    const blocks = Array.from({ length: blocksX * blocksY }, () => ({
+      green: 0,
+      suspect: 0
+    }));
+    let greenPixels = 0;
+    let hueSum = 0;
+    let brightnessSum = 0;
+    let saturationSum = 0;
+    const totalPixels = targetWidth * targetHeight;
+
+    for (let index = 0; index < pixels.length; index += 4) {
+      const pixelIndex = index / 4;
+      const x = pixelIndex % targetWidth;
+      const y = Math.floor(pixelIndex / targetWidth);
+      const blockIndex = Math.floor(y / blockSize) * blocksX + Math.floor(x / blockSize);
+      const red = pixels[index];
+      const green = pixels[index + 1];
+      const blue = pixels[index + 2];
+      const hsv = rgbToHsv(red, green, blue);
+      const isWhiteBackground = hsv.value > 0.72 && hsv.saturation < 0.18;
+      const isGreenLeaf = hsv.hue >= 55 && hsv.hue <= 175 && hsv.saturation > 0.1 && hsv.value > 0.08;
+      const isBrownOrYellowPatch = hsv.hue >= 18 && hsv.hue <= 85 && hsv.saturation > 0.1 && hsv.value > 0.12 && hsv.value < 0.72;
+      const isPurpleOrDarkPatch = hsv.value < 0.42 && hsv.saturation > 0.08 && (blue > green * 0.9 || red > green * 0.82);
+
+      if (isWhiteBackground) {
+        continue;
+      }
+
+      if (isGreenLeaf) {
+        greenPixels += 1;
+        hueSum += hsv.hue;
+        brightnessSum += hsv.value;
+        saturationSum += hsv.saturation;
+        blocks[blockIndex].green += 1;
+      }
+
+      if (!isGreenLeaf && (isBrownOrYellowPatch || isPurpleOrDarkPatch)) {
+        blocks[blockIndex].suspect += 1;
+      }
+    }
+
+    const suspectPixels = blocks.reduce((total, block) => {
+      const blockPixelCount = blockSize * blockSize;
+      const blockPosition = blocks.indexOf(block);
+      const blockX = blockPosition % blocksX;
+      const blockY = Math.floor(blockPosition / blocksX);
+      let hasLeafNearby = block.green >= 4 || block.green / blockPixelCount > 0.02;
+      for (let offsetY = -1; offsetY <= 1 && !hasLeafNearby; offsetY += 1) {
+        for (let offsetX = -1; offsetX <= 1 && !hasLeafNearby; offsetX += 1) {
+          const neighborX = blockX + offsetX;
+          const neighborY = blockY + offsetY;
+          if (neighborX < 0 || neighborX >= blocksX || neighborY < 0 || neighborY >= blocksY) {
+            continue;
+          }
+
+          const neighbor = blocks[neighborY * blocksX + neighborX];
+          hasLeafNearby = neighbor.green >= 8 || neighbor.green / blockPixelCount > 0.03;
+        }
+      }
+      const hasEnoughPatch = block.suspect >= 2;
+      return hasLeafNearby && hasEnoughPatch ? total + block.suspect : total;
+    }, 0);
+    const plantPixels = greenPixels + suspectPixels;
+    const plantRatio = plantPixels ? (plantPixels / totalPixels) * 100 : 0;
+    const spotRatio = plantPixels ? (suspectPixels / plantPixels) * 100 : 0;
+    const previousArea = Number(previous?.metrics?.plantAreaPercent);
+    const growthDelta = Number.isFinite(previousArea) ? plantRatio - previousArea : 0;
+    const classification = classifyPlantVision(plantRatio, spotRatio, growthDelta);
+
+    return {
+      timestamp: new Date().toISOString(),
+      imageUrl: capture.imageUrl,
+      fileName: capture.fileName,
+      capturedAt: capture.capturedAt,
+      status: classification.status,
+      label: classification.label,
+      detail: classification.detail,
+      metrics: {
+        plantAreaPercent: Number(plantRatio.toFixed(2)),
+        growthDeltaPercent: Number(growthDelta.toFixed(2)),
+        suspectSpotPercent: Number(spotRatio.toFixed(2)),
+        averageHue: greenPixels ? Number((hueSum / greenPixels).toFixed(1)) : null,
+        averageBrightness: greenPixels ? Number(((brightnessSum / greenPixels) * 100).toFixed(1)) : null,
+        averageSaturation: greenPixels ? Number(((saturationSum / greenPixels) * 100).toFixed(1)) : null,
+        sampleWidth: targetWidth,
+        sampleHeight: targetHeight
+      }
+    };
+  }
+
+  function renderPlantVision(plantVision) {
+    currentPlantVision = plantVision || { latest: null, history: [] };
+    const latest = currentPlantVision.latest;
+
+    if (!plantVisionStatus || !plantVisionArea || !plantVisionGrowth || !plantVisionSpots || !plantVisionDetail) {
+      return;
+    }
+
+    if (!latest) {
+      plantVisionStatus.className = "badge";
+      plantVisionStatus.textContent = "Sin análisis";
+      plantVisionArea.textContent = "--";
+      plantVisionGrowth.textContent = "--";
+      plantVisionSpots.textContent = "--";
+      plantVisionDetail.textContent = "Ejecutá un análisis para medir hojas sobre el fondo y comparar con la captura anterior.";
+      return;
+    }
+
+    const metrics = latest.metrics || {};
+    const growth = Number(metrics.growthDeltaPercent);
+    plantVisionStatus.className = `badge plant-vision__status plant-vision__status--${latest.status || "ok"}`;
+    plantVisionStatus.textContent = latest.label || "Analizado";
+    plantVisionArea.textContent = toPercent(Number(metrics.plantAreaPercent));
+    plantVisionGrowth.textContent = Number.isFinite(growth) ? `${growth >= 0 ? "+" : ""}${growth.toFixed(1)}%` : "--";
+    plantVisionSpots.textContent = toPercent(Number(metrics.suspectSpotPercent));
+
+    const capturedAt = latest.capturedAt ? formatClock(new Date(latest.capturedAt)) : "--:--:--";
+    const brightness = Number.isFinite(metrics.averageBrightness) ? `${metrics.averageBrightness.toFixed(1)}% brillo` : "brillo sin datos";
+    plantVisionDetail.textContent = `${latest.detail || "Análisis completado."} Captura ${capturedAt}, ${brightness}.`;
+  }
+
+  async function runPlantVisionAnalysis() {
+    if (plantVisionBusy || currentCameraMode !== "mjpeg") {
+      return;
+    }
+
+    plantVisionBusy = true;
+    plantVisionAnalyze.disabled = true;
+    plantVisionAnalyze.textContent = "Analizando...";
+
+    try {
+      const captureResponse = await fetch("/api/plant-vision/capture", { method: "POST" });
+      const capturePayload = await captureResponse.json();
+      if (!captureResponse.ok || !capturePayload.capture) {
+        throw new Error(capturePayload.error || "No se pudo capturar la imagen.");
+      }
+
+      const image = new Image();
+      const loaded = new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error("No se pudo cargar la captura para analizar."));
+      });
+      image.src = `${capturePayload.capture.imageUrl}?t=${Date.now()}`;
+      await loaded;
+
+      const analysis = analyzePlantImage(image, capturePayload.capture, currentPlantVision.latest);
+      const saveResponse = await fetch("/api/plant-vision/analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(analysis)
+      });
+      const savePayload = await saveResponse.json();
+      if (!saveResponse.ok || !savePayload.analysis) {
+        throw new Error(savePayload.error || "No se pudo guardar el análisis.");
+      }
+
+      renderPlantVision({
+        latest: savePayload.analysis,
+        history: [...(currentPlantVision.history || []), savePayload.analysis].slice(-40)
+      });
+      showTransientStatus("Análisis visual actualizado", savePayload.analysis.status === "attention" ? "warning" : "ok");
+    } catch (error) {
+      plantVisionStatus.className = "badge plant-vision__status plant-vision__status--attention";
+      plantVisionStatus.textContent = "Error";
+      plantVisionDetail.textContent = error.message;
+      showTransientStatus("No se pudo analizar la imagen", "warning");
+    } finally {
+      plantVisionBusy = false;
+      plantVisionAnalyze.disabled = false;
+      plantVisionAnalyze.textContent = "Analizar ahora";
+    }
+  }
+
   function hydrate(payload) {
     if (!sensors.length) {
       sensors = payload.sensors || [];
@@ -872,6 +1140,7 @@
     });
 
     renderCamera(payload.camera);
+    renderPlantVision(payload.plantVision);
     updateAlarms(payload.alarms || []);
     updateGlobalStatus(payload.snapshot);
     (payload.actuators || []).forEach(updateActuator);
@@ -974,6 +1243,10 @@
       cameraSnapshotZoomed = !cameraSnapshotZoomed;
       applySnapshotZoom();
     });
+  }
+
+  if (plantVisionAnalyze) {
+    plantVisionAnalyze.addEventListener("click", runPlantVisionAnalysis);
   }
 
   cameraImage.addEventListener("load", () => {

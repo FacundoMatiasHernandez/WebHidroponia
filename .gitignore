@@ -1,4 +1,5 @@
 data/runtime-state.json
+data/plant-captures/
 plcnext.local.json
 hydrovision-live.*.log
 firmware/**/secrets.h

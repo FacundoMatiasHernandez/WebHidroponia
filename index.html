@@ -6,7 +6,7 @@
   <title>HydroVision | Monitoreo de Huerta Hidropónica</title>
   <meta
     name="description"
-    content="Dashboard en tiempo real para monitoreo de variables de una huerta hidropónica con integración futura a PLCnext, ESP32 y Raspberry Pi."
+    content="Dashboard en tiempo real para monitoreo de una huerta hidropónica con ESP32, ESP32-CAM y análisis visual del cultivo."
   >
   <link rel="stylesheet" href="./app/styles/main.css">
 </head>
@@ -18,7 +18,7 @@
         <h1>HydroVision</h1>
         <p class="hero__lead">
           Supervisión en tiempo real para una huerta hidropónica con variables ambientales,
-          agua de proceso, alarmas operativas y video en vivo desde Raspberry Pi.
+          agua de proceso, alarmas operativas, cámara ESP32-CAM y visión del cultivo.
         </p>
         <div class="hero__actions">
           <button id="toggleSimulation" class="button button--primary" type="button">Pausar simulación</button>
@@ -39,8 +39,8 @@
           <strong id="dataMode">Backend mock</strong>
         </div>
         <div class="status-card">
-          <span class="status-card__label">Próxima integración</span>
-          <strong>MQTT / PLCnext / cámara C922</strong>
+          <span class="status-card__label">Arquitectura activa</span>
+          <strong>ESP32-S3 / ESP32-CAM</strong>
         </div>
       </aside>
     </header>
@@ -91,17 +91,50 @@
             hidden
           ></iframe>
           <div id="cameraFallback" class="camera-frame__fallback" hidden>
-            No se pudo abrir el stream. Revisá la URL configurada en la Raspberry y la red local.
+            No se pudo abrir el stream. Revisá la URL configurada para la ESP32-CAM y la red local.
           </div>
           <div class="camera-frame__hud">
             <span class="record-dot"></span>
-            <span id="cameraSourceLabel">LOGI C922 / Raspberry Pi</span>
+            <span id="cameraSourceLabel">ESP32-CAM OV3660</span>
             <span id="cameraTimestamp">--:--:--</span>
           </div>
         </div>
         <p id="cameraNote" class="panel__note">
-          Esta vista usa una simulación visual. El contenedor queda listo para recibir MJPEG, HLS o WebRTC desde la Raspberry.
+          Esta vista puede usar simulación o imagen real desde la ESP32-CAM configurada en el backend.
         </p>
+      </section>
+
+      <section class="panel" aria-labelledby="plantVisionTitle">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Visión del cultivo</p>
+            <h2 id="plantVisionTitle">Salud visual</h2>
+          </div>
+          <span id="plantVisionStatus" class="badge">Sin análisis</span>
+        </div>
+        <div class="plant-vision">
+          <div class="plant-vision__metrics">
+            <article>
+              <span>Área vegetal</span>
+              <strong id="plantVisionArea">--</strong>
+            </article>
+            <article>
+              <span>Cambio</span>
+              <strong id="plantVisionGrowth">--</strong>
+            </article>
+            <article>
+              <span>Manchas</span>
+              <strong id="plantVisionSpots">--</strong>
+            </article>
+          </div>
+          <canvas id="plantVisionCanvas" width="320" height="240" hidden></canvas>
+          <p id="plantVisionDetail" class="panel__note">
+            Ejecutá un análisis para medir hojas sobre el fondo y comparar con la captura anterior.
+          </p>
+          <button id="plantVisionAnalyze" class="button button--primary" type="button">
+            Analizar ahora
+          </button>
+        </div>
       </section>
 
       <section class="panel" aria-labelledby="alarmTitle">
@@ -142,15 +175,15 @@
         <div class="panel__header">
           <div>
             <p class="panel__eyebrow">Arquitectura</p>
-            <h2 id="integrationTitle">Ruta de integración</h2>
+            <h2 id="integrationTitle">Ruta de datos</h2>
           </div>
-          <span class="badge badge--dark">Preparado para hardware</span>
+          <span class="badge badge--dark">Hardware activo</span>
         </div>
         <ol class="stack-list">
-          <li>ESP32 publica mediciones por MQTT.</li>
-          <li>PLCnext gobierna actuadores y alarmas duras.</li>
-          <li>Raspberry Pi actúa como gateway y servidor de video.</li>
-          <li>El dashboard consume la misma estructura de datos desde mocks o backend real.</li>
+          <li>La ESP32-S3 envía mediciones por HTTP al backend.</li>
+          <li>El backend actualiza sensores, alarmas y servicios en tiempo real.</li>
+          <li>La ESP32-CAM entrega imagen HD y video MJPEG al dashboard.</li>
+          <li>La visión del cultivo analiza capturas para seguir crecimiento y manchas.</li>
         </ol>
         <div class="code-card">
           <h3>Payload esperado</h3>
