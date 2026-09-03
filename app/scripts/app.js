@@ -46,6 +46,9 @@
   const plantVisionArea = document.getElementById("plantVisionArea");
   const plantVisionGrowth = document.getElementById("plantVisionGrowth");
   const plantVisionSpots = document.getElementById("plantVisionSpots");
+  const plantVisionConfidence = document.getElementById("plantVisionConfidence");
+  const plantVisionStability = document.getElementById("plantVisionStability");
+  const plantVisionTrend = document.getElementById("plantVisionTrend");
   const plantVisionDetail = document.getElementById("plantVisionDetail");
   const plantVisionCanvas = document.getElementById("plantVisionCanvas");
 
@@ -897,12 +900,20 @@
     };
   }
 
-  function classifyPlantVision(plantRatio, spotRatio, growthDelta) {
+  function classifyPlantVision(plantRatio, spotRatio, growthDelta, confidence) {
     if (plantRatio < 1) {
       return {
         status: "attention",
         label: "Sin hojas",
         detail: "No se detectó suficiente vegetación en el encuadre."
+      };
+    }
+
+    if (confidence < 45) {
+      return {
+        status: "warning",
+        label: "Baja confianza",
+        detail: "La iluminación o el encuadre limitan la lectura visual."
       };
     }
 
@@ -914,7 +925,7 @@
       };
     }
 
-    if (spotRatio > 1.5 || growthDelta < -3) {
+    if (spotRatio > 1 || growthDelta < -3) {
       return {
         status: "warning",
         label: "Atención",
@@ -927,6 +938,102 @@
       label: "Estable",
       detail: "El área vegetal y el color se ven dentro de lo esperado."
     };
+  }
+
+  function getPlantTrend(history, currentArea) {
+    const previousAreas = (history || [])
+      .map((entry) => Number(entry?.metrics?.plantAreaPercent))
+      .filter(Number.isFinite)
+      .slice(-5);
+
+    if (!previousAreas.length || !Number.isFinite(currentArea)) {
+      return {
+        label: "Base",
+        delta: 0,
+        baseline: currentArea
+      };
+    }
+
+    const baseline = previousAreas.reduce((sum, value) => sum + value, 0) / previousAreas.length;
+    const delta = currentArea - baseline;
+
+    if (delta > 1) {
+      return { label: "Creciendo", delta, baseline };
+    }
+
+    if (delta < -1) {
+      return { label: "Bajando", delta, baseline };
+    }
+
+    return { label: "Estable", delta, baseline };
+  }
+
+  function getFrameStability(previous, box, sourceWidth, sourceHeight, plantRatio) {
+    const previousBox = previous?.metrics?.boundingBox;
+    if (!previousBox || !box) {
+      return {
+        label: "Base",
+        score: 100,
+        shiftPercent: 0
+      };
+    }
+
+    const centerX = box.x + box.width / 2;
+    const centerY = box.y + box.height / 2;
+    const previousCenterX = previousBox.x + previousBox.width / 2;
+    const previousCenterY = previousBox.y + previousBox.height / 2;
+    const shift = Math.hypot(centerX - previousCenterX, centerY - previousCenterY);
+    const diagonal = Math.hypot(sourceWidth, sourceHeight);
+    const shiftPercent = diagonal ? (shift / diagonal) * 100 : 0;
+    const previousArea = Number(previous?.metrics?.plantAreaPercent);
+    const areaDelta = Number.isFinite(previousArea) ? Math.abs(plantRatio - previousArea) : 0;
+    const score = clamp(100 - shiftPercent * 10 - areaDelta * 4, 0, 100);
+
+    if (score >= 78) {
+      return { label: "Fijo", score: Number(score.toFixed(0)), shiftPercent: Number(shiftPercent.toFixed(2)) };
+    }
+
+    if (score >= 55) {
+      return { label: "Variable", score: Number(score.toFixed(0)), shiftPercent: Number(shiftPercent.toFixed(2)) };
+    }
+
+    return { label: "Movido", score: Number(score.toFixed(0)), shiftPercent: Number(shiftPercent.toFixed(2)) };
+  }
+
+  function getAnalysisConfidence(plantRatio, averageBrightness, averageSaturation, stabilityScore, spotRatio) {
+    let score = 50;
+    score += clamp(plantRatio * 2.4, 0, 28);
+    score += averageBrightness >= 35 && averageBrightness <= 78 ? 18 : -12;
+    score += averageSaturation >= 14 ? 12 : -8;
+    score += clamp((stabilityScore - 50) * 0.22, -8, 10);
+    if (spotRatio > 4) {
+      score = Math.min(score, 76);
+    } else if (spotRatio > 1) {
+      score = Math.min(score, 84);
+    }
+    return Math.round(clamp(score, 0, 100));
+  }
+
+  function drawPlantOverlay(context, blocks, blocksX, blockSize) {
+    context.save();
+    blocks.forEach((block, index) => {
+      if (!block.green && !block.suspectConfirmed) {
+        return;
+      }
+
+      const x = (index % blocksX) * blockSize;
+      const y = Math.floor(index / blocksX) * blockSize;
+      if (block.green > block.suspectConfirmed) {
+        context.fillStyle = "rgba(107, 229, 170, 0.16)";
+        context.fillRect(x, y, blockSize, blockSize);
+      }
+
+      if (block.suspectConfirmed) {
+        context.fillStyle = "rgba(255, 127, 110, 0.38)";
+        context.fillRect(x, y, blockSize, blockSize);
+      }
+    });
+    context.restore();
   }
 
   function analyzePlantImage(image, capture, previous) {
@@ -946,13 +1053,18 @@
     const blocksY = Math.ceil(targetHeight / blockSize);
     const blocks = Array.from({ length: blocksX * blocksY }, () => ({
       green: 0,
-      suspect: 0
+      suspect: 0,
+      suspectConfirmed: 0
     }));
     let greenPixels = 0;
     let hueSum = 0;
     let brightnessSum = 0;
     let saturationSum = 0;
     const totalPixels = targetWidth * targetHeight;
+    let minX = targetWidth;
+    let minY = targetHeight;
+    let maxX = 0;
+    let maxY = 0;
 
     for (let index = 0; index < pixels.length; index += 4) {
       const pixelIndex = index / 4;
@@ -978,6 +1090,10 @@
         brightnessSum += hsv.value;
         saturationSum += hsv.saturation;
         blocks[blockIndex].green += 1;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
       }
 
       if (!isGreenLeaf && (isBrownOrYellowPatch || isPurpleOrDarkPatch)) {
@@ -985,14 +1101,14 @@
       }
     }
 
-    const suspectPixels = blocks.reduce((total, block) => {
+    let suspectBlockCount = 0;
+    const suspectPixels = blocks.reduce((total, block, blockPosition) => {
       const blockPixelCount = blockSize * blockSize;
-      const blockPosition = blocks.indexOf(block);
       const blockX = blockPosition % blocksX;
       const blockY = Math.floor(blockPosition / blocksX);
-      let hasLeafNearby = block.green >= 4 || block.green / blockPixelCount > 0.02;
-      for (let offsetY = -1; offsetY <= 1 && !hasLeafNearby; offsetY += 1) {
-        for (let offsetX = -1; offsetX <= 1 && !hasLeafNearby; offsetX += 1) {
+      let nearbyGreen = block.green;
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
           const neighborX = blockX + offsetX;
           const neighborY = blockY + offsetY;
           if (neighborX < 0 || neighborX >= blocksX || neighborY < 0 || neighborY >= blocksY) {
@@ -1000,18 +1116,42 @@
           }
 
           const neighbor = blocks[neighborY * blocksX + neighborX];
-          hasLeafNearby = neighbor.green >= 8 || neighbor.green / blockPixelCount > 0.03;
+          nearbyGreen += neighbor.green;
         }
       }
+      const hasLeafSurface = block.green >= 8 || block.green / blockPixelCount > 0.04;
+      const looksLikeWholeStemOrShadow = block.green < 2 && block.suspect / blockPixelCount > 0.58;
       const hasEnoughPatch = block.suspect >= 2;
-      return hasLeafNearby && hasEnoughPatch ? total + block.suspect : total;
+      if (!hasLeafSurface || !hasEnoughPatch || looksLikeWholeStemOrShadow) {
+        return total;
+      }
+
+      block.suspectConfirmed = block.suspect;
+      suspectBlockCount += 1;
+      return total + block.suspect;
     }, 0);
     const plantPixels = greenPixels + suspectPixels;
     const plantRatio = plantPixels ? (plantPixels / totalPixels) * 100 : 0;
     const spotRatio = plantPixels ? (suspectPixels / plantPixels) * 100 : 0;
     const previousArea = Number(previous?.metrics?.plantAreaPercent);
     const growthDelta = Number.isFinite(previousArea) ? plantRatio - previousArea : 0;
-    const classification = classifyPlantVision(plantRatio, spotRatio, growthDelta);
+    const averageBrightness = greenPixels ? Number(((brightnessSum / greenPixels) * 100).toFixed(1)) : null;
+    const averageSaturation = greenPixels ? Number(((saturationSum / greenPixels) * 100).toFixed(1)) : null;
+    const boundingBox = greenPixels
+      ? {
+          x: Number((minX / targetWidth).toFixed(4)),
+          y: Number((minY / targetHeight).toFixed(4)),
+          width: Number(((maxX - minX + 1) / targetWidth).toFixed(4)),
+          height: Number(((maxY - minY + 1) / targetHeight).toFixed(4))
+        }
+      : null;
+    const stability = getFrameStability(previous, boundingBox, 1, 1, plantRatio);
+    const confidence = getAnalysisConfidence(plantRatio, averageBrightness, averageSaturation, stability.score, spotRatio);
+    const trend = getPlantTrend(currentPlantVision.history, plantRatio);
+    const classification = classifyPlantVision(plantRatio, spotRatio, growthDelta, confidence);
+
+    plantVisionCanvas.hidden = false;
+    drawPlantOverlay(context, blocks, blocksX, blockSize);
 
     return {
       timestamp: new Date().toISOString(),
@@ -1024,10 +1164,16 @@
       metrics: {
         plantAreaPercent: Number(plantRatio.toFixed(2)),
         growthDeltaPercent: Number(growthDelta.toFixed(2)),
+        trendDeltaPercent: Number(trend.delta.toFixed(2)),
         suspectSpotPercent: Number(spotRatio.toFixed(2)),
+        suspectBlockCount,
+        confidence,
+        stability,
+        trend,
+        boundingBox,
         averageHue: greenPixels ? Number((hueSum / greenPixels).toFixed(1)) : null,
-        averageBrightness: greenPixels ? Number(((brightnessSum / greenPixels) * 100).toFixed(1)) : null,
-        averageSaturation: greenPixels ? Number(((saturationSum / greenPixels) * 100).toFixed(1)) : null,
+        averageBrightness,
+        averageSaturation,
         sampleWidth: targetWidth,
         sampleHeight: targetHeight
       }
@@ -1048,21 +1194,48 @@
       plantVisionArea.textContent = "--";
       plantVisionGrowth.textContent = "--";
       plantVisionSpots.textContent = "--";
+      if (plantVisionConfidence) {
+        plantVisionConfidence.textContent = "--";
+      }
+      if (plantVisionStability) {
+        plantVisionStability.textContent = "--";
+      }
+      if (plantVisionTrend) {
+        plantVisionTrend.textContent = "--";
+      }
+      if (plantVisionCanvas) {
+        plantVisionCanvas.hidden = true;
+      }
       plantVisionDetail.textContent = "Ejecutá un análisis para medir hojas sobre el fondo y comparar con la captura anterior.";
       return;
     }
 
     const metrics = latest.metrics || {};
     const growth = Number(metrics.growthDeltaPercent);
+    const confidence = Number(metrics.confidence);
+    const spots = Number(metrics.suspectSpotPercent);
+    const stability = metrics.stability || {};
+    const trend = metrics.trend || {};
     plantVisionStatus.className = `badge plant-vision__status plant-vision__status--${latest.status || "ok"}`;
     plantVisionStatus.textContent = latest.label || "Analizado";
     plantVisionArea.textContent = toPercent(Number(metrics.plantAreaPercent));
     plantVisionGrowth.textContent = Number.isFinite(growth) ? `${growth >= 0 ? "+" : ""}${growth.toFixed(1)}%` : "--";
-    plantVisionSpots.textContent = toPercent(Number(metrics.suspectSpotPercent));
+    plantVisionSpots.textContent = toPercent(spots);
+    if (plantVisionConfidence) {
+      plantVisionConfidence.textContent = Number.isFinite(confidence) ? `${confidence}%` : "--";
+    }
+    if (plantVisionStability) {
+      plantVisionStability.textContent = stability.label || "--";
+    }
+    if (plantVisionTrend) {
+      plantVisionTrend.textContent = trend.label || "--";
+    }
 
     const capturedAt = latest.capturedAt ? formatClock(new Date(latest.capturedAt)) : "--:--:--";
     const brightness = Number.isFinite(metrics.averageBrightness) ? `${metrics.averageBrightness.toFixed(1)}% brillo` : "brillo sin datos";
-    plantVisionDetail.textContent = `${latest.detail || "Análisis completado."} Captura ${capturedAt}, ${brightness}.`;
+    const suspectBlocks = Number(metrics.suspectBlockCount);
+    const blockText = Number.isFinite(suspectBlocks) ? ` ${suspectBlocks} zona(s) marcadas.` : "";
+    plantVisionDetail.textContent = `${latest.detail || "Análisis completado."} Captura ${capturedAt}, ${brightness}.${blockText}`;
   }
 
   async function runPlantVisionAnalysis() {
