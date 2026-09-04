@@ -466,9 +466,9 @@ h1 {
 
 .plant-vision__metrics strong {
   display: block;
-  font-size: clamp(1.2rem, 2vw, 1.55rem);
+  font-size: 1.05rem;
   line-height: 1.05;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
 }
 
 .plant-vision__status--ok {
@@ -502,6 +502,24 @@ h1 {
 .plant-vision__preview[hidden] {
   display: none;
 }
+
+.plant-vision__tools, .plant-vision__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.85rem;
+}
+
+.plant-vision__tools label { display: flex; align-items: center; gap: 6px; }
+.plant-vision__tools a { color: var(--accent); text-decoration: underline; }
+.plant-vision__tools button { min-height: 40px; white-space: normal; }
+.plant-vision__tools [hidden] { display: none; }
+.plant-vision__preview { border-radius: 8px; }
+.plant-vision__preview--selecting { cursor: crosshair; touch-action: none; }
+.plant-vision__key { width: 10px; height: 10px; flex: 0 0 10px; }
+.plant-vision__key--repeated { background: #ee4858; }
+.plant-vision__key--tentative { background: #f4be46; }
 
 .alarm-list {
   list-style: none;

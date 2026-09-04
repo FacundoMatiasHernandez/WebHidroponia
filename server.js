@@ -3,6 +3,7 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
+const { collectCameraBurst, withRestoredSettings } = require("./app/camera-burst");
 
 const PORT = process.env.PORT || 4173;
 const APP_DIR = __dirname;
@@ -20,11 +21,12 @@ const INGEST_TOKEN = process.env.INGEST_TOKEN || "";
 const CAMERA_STREAM_PROXY_PATH = "/api/camera/stream";
 const CAMERA_CAPTURE_PROXY_PATH = "/api/camera/capture";
 const CAMERA_CAPTURE_REFRESH_MS = parseEnvInt("CAMERA_CAPTURE_REFRESH_MS", 3600000);
-const CAMERA_ANALYSIS_FLASH_INTENSITY = clamp(parseEnvInt("CAMERA_ANALYSIS_FLASH_INTENSITY", 96), 0, 255);
+const CAMERA_ANALYSIS_FLASH_INTENSITY = clamp(parseEnvInt("CAMERA_ANALYSIS_FLASH_INTENSITY", 24), 0, 255);
+const CAMERA_ANALYSIS_JPEG_QUALITY = clamp(parseEnvInt("CAMERA_ANALYSIS_JPEG_QUALITY", 8), 8, 63);
 const CAMERA_ANALYSIS_FLASH_SETTLE_MS = parseEnvInt("CAMERA_ANALYSIS_FLASH_SETTLE_MS", 250);
 const CAMERA_STILL_PROFILE = {
   framesize: parseEnvInt("CAMERA_STILL_FRAMESIZE", 19),
-  quality: parseEnvInt("CAMERA_STILL_QUALITY", 4),
+  quality: parseEnvInt("CAMERA_STILL_QUALITY", 8),
   label: process.env.CAMERA_STILL_LABEL || "QXGA 2048x1536 HQ",
   settings: {
     brightness: parseEnvInt("CAMERA_STILL_BRIGHTNESS", 0),
@@ -46,6 +48,9 @@ const CAMERA_VIDEO_PROFILE = {
 };
 const CAMERA_CONFIG = readCameraConfig();
 let currentCameraProfileKey = "";
+let cameraOperations = Promise.resolve();
+let cameraAnalysisPending = false;
+const activeCameraResponses = new Set();
 
 const sensors = [
   { id: "air-humidity", label: "Humedad ambiente", unit: "%", decimals: 1, min: 45, max: 85, idealMin: 55, idealMax: 75, base: 67, step: 1.7, color: "#85d3a8", channel: "huerta/sensores/ambiente/humedad" },
@@ -633,7 +638,7 @@ function getPublicState() {
     actuators: state.actuators,
     services: state.services,
     meta: state.meta,
-    camera: CAMERA_CONFIG,
+    camera: { ...CAMERA_CONFIG, analysisInProgress: cameraAnalysisPending },
     plantVision: state.plantVision || { latest: null, history: [] }
   };
 }
@@ -932,6 +937,8 @@ async function applyCameraProfile(profile) {
 }
 
 function proxyCameraResource(response, upstreamUrl, options = {}) {
+  activeCameraResponses.add(response);
+  response.on("close", () => activeCameraResponses.delete(response));
   if (!upstreamUrl) {
     sendJson(response, 404, { error: "Camera resource not configured" });
     return;
@@ -1031,6 +1038,7 @@ function fetchCameraBuffer(upstreamUrl, options = {}) {
       upstreamResponse.on("data", (chunk) => {
         chunks.push(chunk);
       });
+      upstreamResponse.on("error", reject);
 
       upstreamResponse.on("end", () => {
         resolve({
@@ -1066,93 +1074,56 @@ async function fetchCameraStatus() {
   }
 }
 
-async function preparePlantCaptureLighting() {
-  if (!CAMERA_CONFIG.upstreamControlUrl || CAMERA_ANALYSIS_FLASH_INTENSITY <= 0) {
-    return {
-      enabled: false,
-      intensity: 0,
-      previousIntensity: null
-    };
-  }
-
-  let previousIntensity = null;
-  try {
-    const status = await fetchCameraStatus();
-    const value = normalizeNumber(status?.led_intensity);
-    if (value !== null && value >= 0) {
-      previousIntensity = clamp(Math.round(value), 0, 255);
-    }
-  } catch {
-    previousIntensity = null;
-  }
-
-  await requestCameraControl("led_intensity", CAMERA_ANALYSIS_FLASH_INTENSITY);
-  await delay(Math.max(0, CAMERA_ANALYSIS_FLASH_SETTLE_MS));
-
-  return {
-    enabled: true,
-    intensity: CAMERA_ANALYSIS_FLASH_INTENSITY,
-    previousIntensity
-  };
-}
-
-async function restorePlantCaptureLighting(lighting) {
-  if (!lighting?.enabled || !CAMERA_CONFIG.upstreamControlUrl) {
-    return;
-  }
-
-  const restoreIntensity = lighting.previousIntensity === null ? 0 : lighting.previousIntensity;
-  if (restoreIntensity === lighting.intensity) {
-    return;
-  }
-
-  try {
-    await requestCameraControl("led_intensity", restoreIntensity);
-  } catch {
-    // La captura ya se completó; no interrumpimos el análisis por una restauración fallida.
-  }
-}
-
-function toCaptureFileName(date = new Date()) {
-  const stamp = date.toISOString().replace(/[:.]/g, "-");
-  return `plant-${stamp}.jpg`;
+function queueCameraOperation(operation) {
+  const result = cameraOperations.then(operation);
+  cameraOperations = result.catch(() => {});
+  return result;
 }
 
 async function capturePlantImage() {
-  if (CAMERA_CONFIG.mode !== "mjpeg") {
-    throw new Error("Camera capture not configured");
-  }
-
-  await applyCameraProfile(CAMERA_STILL_PROFILE);
-  const lighting = await preparePlantCaptureLighting();
-  let captured;
+  if (CAMERA_CONFIG.mode !== "mjpeg") throw new Error("Camera capture not configured");
+  if (cameraAnalysisPending) throw Object.assign(new Error("Ya hay una captura de analisis en curso"), { statusCode: 409 });
+  cameraAnalysisPending = true;
+  broadcast();
   try {
-    captured = await fetchCameraBuffer(CAMERA_CONFIG.upstreamCaptureUrl, {
-      accept: "image/jpeg,*/*",
-      timeoutMs: 30000
+    return await queueCameraOperation(async () => {
+      for (const response of activeCameraResponses) response.destroy();
+      activeCameraResponses.clear();
+      await delay(500);
+      const frames = await withRestoredSettings(fetchCameraStatus, requestCameraControl, {
+        framesize: CAMERA_STILL_PROFILE.framesize,
+        quality: CAMERA_ANALYSIS_JPEG_QUALITY,
+        ...CAMERA_STILL_PROFILE.settings,
+        led_intensity: CAMERA_ANALYSIS_FLASH_INTENSITY
+      }, async () => {
+        try {
+          return await collectCameraBurst(CAMERA_CONFIG.upstreamStreamUrl, {
+            warmupMs: Math.max(2000, CAMERA_ANALYSIS_FLASH_SETTLE_MS), discardFrames: 6, count: 3
+          });
+        } finally {
+          // Give the ESP32 stream handler time to release its LED and frame buffer.
+          await delay(500);
+        }
+      });
+      fs.mkdirSync(PLANT_CAPTURE_DIR, { recursive: true });
+      const burstId = Date.now().toString(36);
+      const captures = frames.map((frame, index) => {
+        const fileName = `plant-${burstId}-${index + 1}.jpg`;
+        fs.writeFileSync(path.join(PLANT_CAPTURE_DIR, fileName), frame.buffer);
+        return {
+          fileName, imageUrl: `${PLANT_CAPTURE_ROUTE}${fileName}`,
+          capturedAt: frame.capturedAt, bytes: frame.buffer.length, contentType: "image/jpeg",
+          lighting: { mode: CAMERA_ANALYSIS_FLASH_INTENSITY > 0 ? "flash" : "ambient",
+            intensity: CAMERA_ANALYSIS_FLASH_INTENSITY, protocol: "settled-burst-v1" }
+        };
+      });
+      return { ...captures[0], frames: captures, burstId };
     });
   } finally {
-    await restorePlantCaptureLighting(lighting);
+    currentCameraProfileKey = "";
+    cameraAnalysisPending = false;
+    broadcast();
   }
-
-  const capturedAt = new Date();
-  const fileName = toCaptureFileName(capturedAt);
-  const filePath = path.join(PLANT_CAPTURE_DIR, fileName);
-
-  fs.mkdirSync(PLANT_CAPTURE_DIR, { recursive: true });
-  fs.writeFileSync(filePath, captured.buffer);
-
-  return {
-    fileName,
-    imageUrl: `${PLANT_CAPTURE_ROUTE}${fileName}`,
-    capturedAt: capturedAt.toISOString(),
-    bytes: captured.buffer.length,
-    contentType: captured.contentType,
-    lighting: {
-      mode: lighting.enabled ? "flash" : "ambient",
-      intensity: lighting.intensity
-    }
-  };
 }
 
 function savePlantVisionAnalysis(analysis) {
@@ -1312,12 +1283,14 @@ const server = http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${host}`);
 
     if (request.method === "GET" && url.pathname === CAMERA_STREAM_PROXY_PATH) {
-      await proxyCameraStream(response);
+      if (cameraAnalysisPending) { sendJson(response, 409, { error: "Captura de analisis en curso" }); return; }
+      await queueCameraOperation(() => proxyCameraStream(response));
       return;
     }
 
     if (request.method === "GET" && url.pathname === CAMERA_CAPTURE_PROXY_PATH) {
-      await proxyCameraCapture(response);
+      if (cameraAnalysisPending) { sendJson(response, 409, { error: "Captura de analisis en curso" }); return; }
+      await queueCameraOperation(() => proxyCameraCapture(response));
       return;
     }
 
@@ -1393,7 +1366,7 @@ const server = http.createServer(async (request, response) => {
         const capture = await capturePlantImage();
         sendJson(response, 200, { ok: true, capture });
       } catch (error) {
-        sendJson(response, 502, { ok: false, error: error.message });
+        sendJson(response, error.statusCode || 502, { ok: false, error: error.message });
       }
       return;
     }

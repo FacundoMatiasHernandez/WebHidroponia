@@ -123,11 +123,11 @@
               <strong id="plantVisionGrowth">--</strong>
             </article>
             <article>
-              <span>Manchas</span>
+              <span>Manchas repetidas</span>
               <strong id="plantVisionSpots">--</strong>
             </article>
             <article>
-              <span>Confianza</span>
+              <span>Calidad de foto</span>
               <strong id="plantVisionConfidence">--</strong>
             </article>
             <article>
@@ -139,7 +139,14 @@
               <strong id="plantVisionTrend">--</strong>
             </article>
           </div>
-          <canvas id="plantVisionCanvas" class="plant-vision__preview" width="640" height="480" hidden></canvas>
+          <div class="plant-vision__tools">
+            <label><input id="plantVisionMarks" type="checkbox" checked> Marcas</label>
+            <button id="plantVisionSelect" class="button button--ghost" type="button" aria-pressed="false">Seleccionar hoja</button>
+            <button id="plantVisionReset" class="button button--ghost" type="button" hidden>Restablecer área</button>
+            <a id="plantVisionOriginal" target="_blank" rel="noopener" hidden>Foto original</a>
+          </div>
+          <canvas id="plantVisionCanvas" class="plant-vision__preview" width="960" height="720" aria-label="Foto de las hojas con marcas del análisis" hidden></canvas>
+          <div class="plant-vision__legend"><span class="plant-vision__key plant-vision__key--repeated"></span> Marcas repetidas <span class="plant-vision__key plant-vision__key--tentative"></span> Por revisar</div>
           <p id="plantVisionDetail" class="panel__note">
             Ejecutá un análisis para medir hojas sobre el fondo y comparar con la captura anterior.
           </p>
@@ -213,6 +220,7 @@
   </div>
 
   <script src="./app/scripts/charts.js"></script>
+  <script src="./app/scripts/plant-vision.js"></script>
   <script src="./app/scripts/app.js"></script>
 </body>
 </html>

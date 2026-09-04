@@ -41,11 +41,12 @@ Preparacion del sketch:
 Variables opcionales del servidor:
 
 - `CAMERA_STILL_FRAMESIZE=19`
-- `CAMERA_STILL_QUALITY=4`
+- `CAMERA_STILL_QUALITY=8`
 - `CAMERA_VIDEO_FRAMESIZE=15`
 - `CAMERA_VIDEO_QUALITY=10`
 - `CAMERA_CAPTURE_REFRESH_MS=3600000`
-- `CAMERA_ANALYSIS_FLASH_INTENSITY=96`
+- `CAMERA_ANALYSIS_FLASH_INTENSITY=24`
+- `CAMERA_ANALYSIS_JPEG_QUALITY=8`
 - `CAMERA_ANALYSIS_FLASH_SETTLE_MS=250`
 - `CAMERA_STILL_BRIGHTNESS=0`
 - `CAMERA_STILL_CONTRAST=1`
@@ -54,8 +55,10 @@ Variables opcionales del servidor:
 
 Notas de calidad:
 
-- `FRAMESIZE_QXGA` con `quality=4` fue estable para captura fija y reduce la compresion.
+- `FRAMESIZE_QXGA` con `quality=8` fue estable en las rafagas probadas. `quality=4` produjo cortes con menos flash; no usarlo como ajuste general de analisis.
 - `quality=3` daba aun menos compresion, pero la camara respondia con errores `500`.
-- `FRAMESIZE_FHD` y `FRAMESIZE_QXGA` no fueron estables para MJPEG continuo en la placa probada.
-- La captura de analisis puede usar el flash aunque la imagen principal este en modo foto sin luz. El backend restaura la intensidad previa al terminar.
+- El video continuo conserva UXGA. El analisis abre un stream QXGA temporal, descarta seis fotogramas y espera al menos dos segundos para que el LED y la exposicion se estabilicen. Conserva tres fotos y cierra el stream.
+- Configurar `led_intensity` no enciende por si solo el LED cuando no hay video: el firmware lo enciende dentro de los handlers de captura/stream. La rafaga usa el stream para mantener la luz durante el calentamiento.
+- El backend pausa los consumidores de video y restaura todos los ajustes modificados, incluida la intensidad previa, al terminar. Si la restauracion falla dos veces, muestra el error en lugar de afirmar que se completo.
+- No hace falta reflashear esta version del firmware para utilizar la rafaga.
 - La mejora mas grande fuera del codigo suele venir de buena iluminacion, foco manual del lente y WiFi estable.
