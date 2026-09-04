@@ -45,6 +45,8 @@ Variables opcionales del servidor:
 - `CAMERA_VIDEO_FRAMESIZE=15`
 - `CAMERA_VIDEO_QUALITY=10`
 - `CAMERA_CAPTURE_REFRESH_MS=3600000`
+- `CAMERA_ANALYSIS_FLASH_INTENSITY=96`
+- `CAMERA_ANALYSIS_FLASH_SETTLE_MS=250`
 - `CAMERA_STILL_BRIGHTNESS=0`
 - `CAMERA_STILL_CONTRAST=1`
 - `CAMERA_STILL_SATURATION=0`
@@ -55,4 +57,5 @@ Notas de calidad:
 - `FRAMESIZE_QXGA` con `quality=4` fue estable para captura fija y reduce la compresion.
 - `quality=3` daba aun menos compresion, pero la camara respondia con errores `500`.
 - `FRAMESIZE_FHD` y `FRAMESIZE_QXGA` no fueron estables para MJPEG continuo en la placa probada.
+- La captura de analisis puede usar el flash aunque la imagen principal este en modo foto sin luz. El backend restaura la intensidad previa al terminar.
 - La mejora mas grande fuera del codigo suele venir de buena iluminacion, foco manual del lente y WiFi estable.

@@ -20,6 +20,8 @@ const INGEST_TOKEN = process.env.INGEST_TOKEN || "";
 const CAMERA_STREAM_PROXY_PATH = "/api/camera/stream";
 const CAMERA_CAPTURE_PROXY_PATH = "/api/camera/capture";
 const CAMERA_CAPTURE_REFRESH_MS = parseEnvInt("CAMERA_CAPTURE_REFRESH_MS", 3600000);
+const CAMERA_ANALYSIS_FLASH_INTENSITY = clamp(parseEnvInt("CAMERA_ANALYSIS_FLASH_INTENSITY", 96), 0, 255);
+const CAMERA_ANALYSIS_FLASH_SETTLE_MS = parseEnvInt("CAMERA_ANALYSIS_FLASH_SETTLE_MS", 250);
 const CAMERA_STILL_PROFILE = {
   framesize: parseEnvInt("CAMERA_STILL_FRAMESIZE", 19),
   quality: parseEnvInt("CAMERA_STILL_QUALITY", 4),
@@ -155,6 +157,24 @@ function deriveEsp32ControlUrl(mjpegUrl, captureUrl) {
   }
 }
 
+function deriveEsp32StatusUrl(mjpegUrl, captureUrl, controlUrl) {
+  const value = captureUrl || controlUrl || mjpegUrl;
+
+  try {
+    const target = new URL(value);
+    target.pathname = "/status";
+    target.search = "";
+
+    if (target.port === "81") {
+      target.port = "";
+    }
+
+    return target.toString();
+  } catch {
+    return "";
+  }
+}
+
 function readCameraConfig() {
   const requestedMode = typeof process.env.CAMERA_MODE === "string"
     ? process.env.CAMERA_MODE.trim().toLowerCase()
@@ -162,6 +182,7 @@ function readCameraConfig() {
   const mjpegUrl = normalizeUrl(process.env.CAMERA_MJPEG_URL);
   const captureUrl = normalizeUrl(process.env.CAMERA_CAPTURE_URL) || deriveEsp32CaptureUrl(mjpegUrl);
   const controlUrl = normalizeUrl(process.env.CAMERA_CONTROL_URL) || deriveEsp32ControlUrl(mjpegUrl, captureUrl);
+  const statusUrl = normalizeUrl(process.env.CAMERA_STATUS_URL) || deriveEsp32StatusUrl(mjpegUrl, captureUrl, controlUrl);
   const embedUrl = normalizeUrl(process.env.CAMERA_EMBED_URL);
   const label = typeof process.env.CAMERA_LABEL === "string" && process.env.CAMERA_LABEL.trim()
     ? process.env.CAMERA_LABEL.trim()
@@ -190,6 +211,7 @@ function readCameraConfig() {
       upstreamStreamUrl: mjpegUrl,
       upstreamCaptureUrl: captureUrl,
       upstreamControlUrl: controlUrl,
+      upstreamStatusUrl: statusUrl,
       note: `Modo imagen: ${CAMERA_STILL_PROFILE.label} cada ${formatDuration(CAMERA_CAPTURE_REFRESH_MS)}. Modo video: ${CAMERA_VIDEO_PROFILE.label} desde ${formatCameraHost(mjpegUrl)}.`
     };
   }
@@ -1027,6 +1049,70 @@ function fetchCameraBuffer(upstreamUrl, options = {}) {
   });
 }
 
+async function fetchCameraStatus() {
+  if (!CAMERA_CONFIG.upstreamStatusUrl) {
+    return null;
+  }
+
+  const status = await fetchCameraBuffer(CAMERA_CONFIG.upstreamStatusUrl, {
+    accept: "application/json,*/*",
+    timeoutMs: 5000
+  });
+
+  try {
+    return JSON.parse(status.buffer.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function preparePlantCaptureLighting() {
+  if (!CAMERA_CONFIG.upstreamControlUrl || CAMERA_ANALYSIS_FLASH_INTENSITY <= 0) {
+    return {
+      enabled: false,
+      intensity: 0,
+      previousIntensity: null
+    };
+  }
+
+  let previousIntensity = null;
+  try {
+    const status = await fetchCameraStatus();
+    const value = normalizeNumber(status?.led_intensity);
+    if (value !== null && value >= 0) {
+      previousIntensity = clamp(Math.round(value), 0, 255);
+    }
+  } catch {
+    previousIntensity = null;
+  }
+
+  await requestCameraControl("led_intensity", CAMERA_ANALYSIS_FLASH_INTENSITY);
+  await delay(Math.max(0, CAMERA_ANALYSIS_FLASH_SETTLE_MS));
+
+  return {
+    enabled: true,
+    intensity: CAMERA_ANALYSIS_FLASH_INTENSITY,
+    previousIntensity
+  };
+}
+
+async function restorePlantCaptureLighting(lighting) {
+  if (!lighting?.enabled || !CAMERA_CONFIG.upstreamControlUrl) {
+    return;
+  }
+
+  const restoreIntensity = lighting.previousIntensity === null ? 0 : lighting.previousIntensity;
+  if (restoreIntensity === lighting.intensity) {
+    return;
+  }
+
+  try {
+    await requestCameraControl("led_intensity", restoreIntensity);
+  } catch {
+    // La captura ya se completó; no interrumpimos el análisis por una restauración fallida.
+  }
+}
+
 function toCaptureFileName(date = new Date()) {
   const stamp = date.toISOString().replace(/[:.]/g, "-");
   return `plant-${stamp}.jpg`;
@@ -1038,10 +1124,17 @@ async function capturePlantImage() {
   }
 
   await applyCameraProfile(CAMERA_STILL_PROFILE);
-  const captured = await fetchCameraBuffer(CAMERA_CONFIG.upstreamCaptureUrl, {
-    accept: "image/jpeg,*/*",
-    timeoutMs: 30000
-  });
+  const lighting = await preparePlantCaptureLighting();
+  let captured;
+  try {
+    captured = await fetchCameraBuffer(CAMERA_CONFIG.upstreamCaptureUrl, {
+      accept: "image/jpeg,*/*",
+      timeoutMs: 30000
+    });
+  } finally {
+    await restorePlantCaptureLighting(lighting);
+  }
+
   const capturedAt = new Date();
   const fileName = toCaptureFileName(capturedAt);
   const filePath = path.join(PLANT_CAPTURE_DIR, fileName);
@@ -1054,7 +1147,11 @@ async function capturePlantImage() {
     imageUrl: `${PLANT_CAPTURE_ROUTE}${fileName}`,
     capturedAt: capturedAt.toISOString(),
     bytes: captured.buffer.length,
-    contentType: captured.contentType
+    contentType: captured.contentType,
+    lighting: {
+      mode: lighting.enabled ? "flash" : "ambient",
+      intensity: lighting.intensity
+    }
   };
 }
 

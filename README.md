@@ -9,7 +9,7 @@ Dashboard web para monitoreo de una huerta hidroponica con ESP32-S3, ESP32-CAM y
 - Historico reciente de las ultimas 40 muestras por sensor.
 - Sistema de alarmas con severidad `warning` y `critical`.
 - Canal de camara ESP32-CAM con imagen HD y video MJPEG.
-- Analisis visual inicial para estimar area vegetal, crecimiento y manchas.
+- Analisis visual inicial para estimar area foliar, crecimiento y manchas con luz controlada.
 - Modo mock para probar la interfaz sin hardware conectado.
 
 ## Arquitectura actual
@@ -40,6 +40,8 @@ $env:CAMERA_MJPEG_URL = "http://<ESP32_CAM_IP>:81/stream"
 $env:CAMERA_LABEL = "ESP32-CAM OV3660"
 node server.js
 ```
+
+La captura usada por `POST /api/plant-vision/capture` puede encender el flash solo durante el analisis y restaurarlo despues. El valor por defecto es `CAMERA_ANALYSIS_FLASH_INTENSITY=96`.
 
 Si queres reiniciar el estado persistido:
 
