@@ -13,7 +13,7 @@ async function inspect() {
   for (const name of files) {
     const { data, info } = await sharp(path.join(dir, name)).resize({ width: 1024, withoutEnlargement: true }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const result = vision.analyze(data, info.width, info.height);
-    const { mask, candidates, signature, ...metrics } = result;
+    const { mask, candidates, signature, yellowCandidates, yellowLabels, ...metrics } = result;
     results.push({ name, ...metrics });
     const overlay = Buffer.from(data);
     for (let i = 0; i < mask.length; i++) {

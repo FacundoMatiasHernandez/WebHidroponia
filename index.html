@@ -119,12 +119,16 @@
               <strong id="plantVisionArea">--</strong>
             </article>
             <article>
-              <span>Cambio</span>
+              <span>Cambio de área</span>
               <strong id="plantVisionGrowth">--</strong>
             </article>
             <article>
               <span>Manchas repetidas</span>
               <strong id="plantVisionSpots">--</strong>
+            </article>
+            <article>
+              <span>Amarillamiento</span>
+              <strong id="plantVisionYellow">--</strong>
             </article>
             <article>
               <span>Calidad de foto</span>
@@ -146,9 +150,9 @@
             <a id="plantVisionOriginal" target="_blank" rel="noopener" hidden>Foto original</a>
           </div>
           <canvas id="plantVisionCanvas" class="plant-vision__preview" width="960" height="720" aria-label="Foto de las hojas con marcas del análisis" hidden></canvas>
-          <div class="plant-vision__legend"><span class="plant-vision__key plant-vision__key--repeated"></span> Marcas repetidas <span class="plant-vision__key plant-vision__key--tentative"></span> Por revisar</div>
+          <div class="plant-vision__legend"><span class="plant-vision__key plant-vision__key--repeated"></span> Manchas <span class="plant-vision__key plant-vision__key--yellow"></span> Amarillamiento <span class="plant-vision__key plant-vision__key--tentative"></span> Por revisar</div>
           <p id="plantVisionDetail" class="panel__note">
-            Ejecutá un análisis para medir hojas sobre el fondo y comparar con la captura anterior.
+            Sin capturas evaluadas.
           </p>
           <button id="plantVisionAnalyze" class="button button--primary" type="button">
             Analizar ahora
@@ -221,6 +225,7 @@
 
   <script src="./app/scripts/charts.js"></script>
   <script src="./app/scripts/plant-vision.js"></script>
+  <script src="./app/scripts/plant-trends.js"></script>
   <script src="./app/scripts/app.js"></script>
 </body>
 </html>

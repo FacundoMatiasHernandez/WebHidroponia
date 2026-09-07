@@ -519,7 +519,8 @@ h1 {
 .plant-vision__preview--selecting { cursor: crosshair; touch-action: none; }
 .plant-vision__key { width: 10px; height: 10px; flex: 0 0 10px; }
 .plant-vision__key--repeated { background: #ee4858; }
-.plant-vision__key--tentative { background: #f4be46; }
+.plant-vision__key--tentative { background: #53bde0; }
+.plant-vision__key--yellow { background: #c45a10; }
 
 .alarm-list {
   list-style: none;

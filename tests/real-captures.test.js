@@ -8,6 +8,26 @@ try { sharp = require("sharp"); } catch { /* Camera corpus tests are optional on
 const dir = path.resolve("data/plant-captures");
 const names = ["plant-light-24-1788495226046-0.jpg", "plant-light-24-1788495226047-1.jpg", "plant-light-24-1788495226048-2.jpg"];
 const available = sharp && names.every((name) => fs.existsSync(path.join(dir, name)));
+test("user reference: yellow leaf is a candidate, green leaf and holes are excluded", {
+  skip: !sharp || !fs.existsSync(path.join(dir, "yellow-leaf-reference.png"))
+}, async () => {
+  const { data, info } = await sharp(path.join(dir, "yellow-leaf-reference.png")).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const result = vision.analyze(data, info.width, info.height);
+  assert.ok(result.yellowRegions.some((r) => r.x < 0.2 && r.width > 0.25 && r.height > 0.4));
+  const pixel = (x, y) => Math.floor(y * info.height) * info.width + Math.floor(x * info.width);
+  assert.equal(result.yellowCandidates[pixel(0.65, 0.45)], 0, "Green leaf counted as yellow");
+  assert.equal(result.yellowCandidates[pixel(0.30, 0.34)], 0, "Hole counted as yellow");
+  assert.ok(result.yellowCandidates[pixel(0.25, 0.43)]);
+});
+test("real September 7 burst: yellow leaf repeats and the brown tip remains visible", {
+  skip: !sharp || ![1, 2, 3].every((i) => fs.existsSync(path.join(dir, `plant-mtrckfe1-${i}.jpg`)))
+}, async () => {
+  const frames = await Promise.all([1, 2, 3].map((i) => read(`plant-mtrckfe1-${i}.jpg`)));
+  const result = vision.combine(frames);
+  assert.ok(result.yellowPercent > 15 && result.yellowPercent < 40);
+  assert.ok(result.yellowRegions.some((r) => r.repeated && r.x > 0.5 && r.x < 0.6 && r.height > 0.3));
+  assert.ok(result.regions.some((r) => r.repeated && r.x > 0.73 && r.y > 0.65 && r.y < 0.72));
+});
 async function read(name, transform = (image) => image) {
   const { data, info } = await transform(sharp(path.join(dir, name)).resize(1024)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   return vision.analyze(data, info.width, info.height);

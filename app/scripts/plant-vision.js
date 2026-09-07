@@ -4,7 +4,7 @@
   else root.HydroVisionPlant = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function createPlantVision() {
   "use strict";
-  const VERSION = "leaf-pixel-v4.1";
+  const VERSION = "leaf-pixel-v4.3";
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const median = (values) => {
     if (!values.length) return 0;
@@ -75,7 +75,8 @@
         || width * height > 4000000 || data.length !== width * height * 4) throw new Error("Invalid image dimensions");
     const n = width * height;
     const roi = options.roi || { x: 0, y: 0, width: 1, height: 1 };
-    if (![roi.x, roi.y, roi.width, roi.height].every(Number.isFinite) || roi.width <= 0 || roi.height <= 0) {
+    if (![roi.x, roi.y, roi.width, roi.height].every(Number.isFinite) || roi.width <= 0 || roi.height <= 0
+        || roi.x < 0 || roi.y < 0 || roi.x + roi.width > 1 + 1e-9 || roi.y + roi.height > 1 + 1e-9) {
       throw new Error("Invalid leaf region");
     }
     const inRegion = (x, y) => x >= roi.x * width && y >= roi.y * height
@@ -149,6 +150,37 @@
       if (closed[i] || (nearby[i] && (green[i] || (redRatio[i] > 0.93 && blueRatio[i] < 0.97 && saturation[i] > 0.065)))) mask[i] = 1;
     }
     const interior = morphology(mask, width, height, Math.max(1, radius), true);
+    // Yellow tissue can lie outside the green reconstruction. Keep it separate from spot and growth masks.
+    const yellowRaw = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      yellowRaw[i] = +(inRegion(i % width, Math.floor(i / width)) && redRatio[i] > 1.02 && redRatio[i] < 1.48
+        && blueRatio[i] < 0.86 && saturation[i] > 0.18 && brightness[i] > 0.38 && brightness[i] < 0.94);
+    }
+    const yellowCore = morphology(morphology(yellowRaw, width, height, Math.max(1, Math.round(width / 300)), true),
+      width, height, Math.max(1, Math.round(width / 300)), false);
+    const yellowGroups = components(yellowCore, width, height);
+    const nearFoliage = morphology(mask, width, height, Math.max(4, Math.round(width * 0.08)), false);
+    const yellowCandidates = new Uint8Array(n), yellowRegions = [];
+    for (const c of yellowGroups.items) {
+      const compactness = c.pixels / (c.width * c.height);
+      if (c.pixels < Math.max(40, n * 0.0015) || Math.min(c.width, c.height) < Math.max(4, width * 0.015)
+          || compactness < 0.18 || compactness > 0.9 || Math.max(c.width, c.height) / Math.min(c.width, c.height) > 8) continue;
+      let nearbyPixels = 0, clippedPixels = 0;
+      for (let y = c.y; y < c.y + c.height; y++) for (let x = c.x; x < c.x + c.width; x++) {
+        const i = y * width + x;
+        if (yellowGroups.labels[i] !== c.id) continue;
+        nearbyPixels += nearFoliage[i];
+        clippedPixels += +(Math.max(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]) >= 252);
+      }
+      if (nearbyPixels / c.pixels < 0.1) continue;
+      const evaluable = clippedPixels / c.pixels <= 0.1;
+      for (let y = c.y; y < c.y + c.height; y++) for (let x = c.x; x < c.x + c.width; x++) {
+        const i = y * width + x;
+        if (yellowGroups.labels[i] === c.id) yellowCandidates[i] = evaluable ? 1 : 2;
+      }
+      yellowRegions.push({ id: c.id, x: c.x / width, y: c.y / height, width: c.width / width, height: c.height / height,
+        pixels: c.pixels, evaluable });
+    }
     const leafGroups = components(mask, width, height);
     const reference = new Map();
     for (const c of leafGroups.items) reference.set(c.id, { r: [], b: [], light: [] });
@@ -227,7 +259,7 @@
     }
     for (let i = 0; i < signature.length; i++) signature[i] /= Math.max(1, cells[i]);
     return {
-      width, height, mask, candidates, regions, signature, roi: options.roi || null,
+      width, height, mask, candidates, regions, signature, yellowCandidates, yellowRegions, yellowLabels: yellowGroups.labels, roi: options.roi || null,
       leafPixels, suspectPixels, quality: { usable: issues.length === 0, issues, score: qualityScore, sharpness: +sharpness.toFixed(2) },
       averageBrightness: +averageBrightness.toFixed(2), averageSaturation: leafPixels ? satSum / leafPixels * 100 : 0,
       plantAreaPercent: leafPixels / n * 100, suspectSpotPercent: leafPixels ? suspectPixels / leafPixels * 100 : null,
@@ -257,17 +289,24 @@
   function combine(frames) {
     if (!frames.length) throw new Error("No frames to analyze");
     const expanded = frames.map((f) => morphology(f.candidates, f.width, f.height, Math.max(1, Math.round(f.width / 500)), false));
+    const yellowVotes = frames.map((frame) => morphology(Uint8Array.from(frame.yellowCandidates, (v) => +(v === 1)),
+      frame.width, frame.height, Math.max(1, Math.round(frame.width / 500)), false));
     const peers = frames.map((a) => frames.map((b) => a.quality.usable && b.quality.usable && compareFrames(a, b)));
     const ranks = frames.map((frame, index) => {
-      let supported = 0;
+      let supported = 0, yellowSupported = 0;
       for (let pixel = 0; pixel < frame.candidates.length; pixel++) {
+        if (frame.yellowCandidates[pixel] === 1) {
+          let count = 0;
+          for (let j = 0; j < frames.length; j++) if (peers[index][j]) count += yellowVotes[j][pixel];
+          yellowSupported += +(count >= 2);
+        }
         if (!frame.candidates[pixel]) continue;
         let count = 0;
         for (let j = 0; j < frames.length; j++) if (peers[index][j]) count += expanded[j][pixel];
         supported += +(count >= 2);
       }
       return (frame.quality.usable ? 10000 : 0) + peers[index].filter(Boolean).length * 1000
-        + (supported >= 20 ? 100 : 0) + frame.quality.score;
+        + (supported >= 20 ? 100 : 0) + (yellowSupported >= 40 ? 50 : 0) + frame.quality.score;
     });
     let selectedIndex = 0;
     for (let i = 1; i < frames.length; i++) {
@@ -305,8 +344,14 @@
         && actualPixels >= Math.max(15, best.width * best.height * 0.00006);
       const atFrameEdge = region.x <= 1 || region.y <= 1
         || region.x + region.width >= best.width - 1 || region.y + region.height >= best.height - 1;
+      const roi = best.roi;
+      const atSelectionEdge = roi && (region.x <= Math.ceil(roi.x * best.width) + 1
+        || region.y <= Math.ceil(roi.y * best.height) + 1
+        || region.x + region.width >= (roi.x + roi.width) * best.width - 1
+        || region.y + region.height >= (roi.y + roi.height) * best.height - 1);
       const sufficientSurface = interiorPixels / Math.max(1, actualPixels) >= 0.6 || actualPixels >= best.leafPixels * 0.004;
-      const repeated = stable && broadPatch && sufficientSurface && !atFrameEdge && supported / Math.max(1, actualPixels) >= 0.45;
+      const repeated = stable && broadPatch && sufficientSurface && !atFrameEdge && !atSelectionEdge
+        && supported / Math.max(1, actualPixels) >= 0.45;
       for (let y = region.y; y < region.y + region.height; y++) {
         for (let x = region.x; x < region.x + region.width; x++) {
           const i = y * best.width + x;
@@ -319,7 +364,44 @@
         height: region.height / best.height, pixels: actualPixels, repeated });
     }
     const usable = best.quality.usable && stable;
+    const areas = comparable.map((frame) => frame.plantAreaPercent);
+    const areaMeasurement = usable ? { min: Math.min(...areas), max: Math.max(...areas), samples: areas.length } : null;
+    const yellowRepeated = new Uint8Array(best.mask.length);
+    let yellowPixels = 0, yellowTentativePixels = 0, colorAreaPixels = best.leafPixels;
+    const yellowRegions = best.yellowRegions.map((region) => {
+      const x0 = Math.round(region.x * best.width), y0 = Math.round(region.y * best.height);
+      const rw = Math.round(region.width * best.width), rh = Math.round(region.height * best.height);
+      const roi = best.roi || { x: 0, y: 0, width: 1, height: 1 };
+      const cut = region.x <= roi.x + 2 / best.width || region.y <= roi.y + 2 / best.height
+        || region.x + region.width >= roi.x + roi.width - 2 / best.width
+        || region.y + region.height >= roi.y + roi.height - 2 / best.height;
+      let supported = 0, count = 0;
+      for (let y = y0; y < y0 + rh; y++) for (let x = x0; x < x0 + rw; x++) {
+        const i = y * best.width + x;
+        if (!best.yellowCandidates[i] || best.yellowLabels[i] !== region.id) continue;
+        let votes = 0;
+        for (let j = 0; j < frames.length; j++) if (peers[selectedIndex][j]) votes += yellowVotes[j][i];
+        supported += +(votes >= required); count++;
+      }
+      const repeated = usable && region.evaluable && !cut && supported / Math.max(1, count) >= 0.65;
+      for (let y = y0; y < y0 + rh; y++) for (let x = x0; x < x0 + rw; x++) {
+        const i = y * best.width + x;
+        if (!best.yellowCandidates[i] || best.yellowLabels[i] !== region.id) continue;
+        yellowRepeated[i] = +repeated;
+        if (overlay[i] !== 2) overlay[i] = repeated ? 3 : 1;
+      }
+      return { ...region, repeated };
+    });
+    for (let i = 0; i < overlay.length; i++) {
+      if (best.yellowCandidates[i]) {
+        // Count the union once, including pixels where a red spot takes visual priority.
+        if (yellowRepeated[i]) { yellowPixels++; if (!best.mask[i]) colorAreaPixels++; }
+        else yellowTentativePixels++;
+      }
+    }
     return { ...best, overlay, regions, selectedIndex, stable, usable, repeatedPixels, tentativePixels,
+      areaMeasurement, yellowRegions, yellowPixels, yellowTentativePixels, colorAreaPixels,
+      yellowPercent: usable ? yellowPixels / Math.max(1, colorAreaPixels) * 100 : null,
       suspectSpotPercent: usable ? repeatedPixels / Math.max(1, best.leafPixels) * 100 : null,
       frameCount: frames.length, comparableFrames: comparable.length };
   }

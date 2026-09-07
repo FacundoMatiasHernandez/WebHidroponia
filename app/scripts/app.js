@@ -46,6 +46,7 @@
   const plantVisionArea = document.getElementById("plantVisionArea");
   const plantVisionGrowth = document.getElementById("plantVisionGrowth");
   const plantVisionSpots = document.getElementById("plantVisionSpots");
+  const plantVisionYellow = document.getElementById("plantVisionYellow");
   const plantVisionConfidence = document.getElementById("plantVisionConfidence");
   const plantVisionStability = document.getElementById("plantVisionStability");
   const plantVisionTrend = document.getElementById("plantVisionTrend");
@@ -935,10 +936,8 @@
       for (let i = 0; i < result.overlay.length; i++) {
         const value = result.overlay[i];
         if (!value) continue;
-        pixels.data[i * 4] = value === 2 ? 238 : 244;
-        pixels.data[i * 4 + 1] = value === 2 ? 72 : 190;
-        pixels.data[i * 4 + 2] = value === 2 ? 88 : 70;
-        pixels.data[i * 4 + 3] = 150;
+        const color = value === 2 ? [238, 72, 88] : value === 3 ? [196, 90, 16] : [83, 189, 224];
+        pixels.data.set([...color, value === 3 ? 175 : 150], i * 4);
       }
       layer.putImageData(pixels, 0, 0);
       ctx.drawImage(overlay, crop.x * result.width, crop.y * result.height,
@@ -966,6 +965,10 @@
     }
     if (!result.stable) return { status: "warning", label: "Repetir captura",
       detail: "Las fotos no son comparables por movimiento o cambios de luz." };
+    if (result.yellowPixels) return { status: "attention", label: result.repeatedPixels ? "Manchas y amarillamiento" : "Amarillamiento visible",
+      detail: "Hay zonas amarillentas amplias que se repiten cerca del follaje. Es una señal visual, no un diagnóstico de su causa." };
+    if (result.yellowTentativePixels && !result.repeatedPixels) return { status: "warning", label: "Color por revisar",
+      detail: "Hay zonas amarillentas cuya iluminación, recorte o repetición no permite cuantificarlas." };
     if (result.repeatedPixels) return { status: "attention", label: "Manchas posibles",
       detail: "Hay cambios de color que se repiten sobre la hoja. La imagen no determina su causa." };
     if (result.tentativePixels) return { status: "warning", label: "Marcas por revisar",
@@ -976,39 +979,37 @@
 
   function makePlantAnalysis(result, frames) {
     const capture = frames[result.selectedIndex].capture;
-    const previous = currentPlantVision.latest, old = previous?.metrics;
-    const sameRegion = JSON.stringify(old?.roi || null) === JSON.stringify(leafRegion);
-    const sameLight = previous?.lighting?.protocol === capture.lighting?.protocol
-      && previous?.lighting?.intensity === capture.lighting?.intensity;
-    const box = result.boundingBox, last = old?.boundingBox;
-    const shift = box && last ? Math.hypot(box.x + box.width / 2 - last.x - last.width / 2,
-      box.y + box.height / 2 - last.y - last.height / 2) : 1;
-    const similarBox = box && last && Math.abs(box.width - last.width) < 0.04 && Math.abs(box.height - last.height) < 0.04;
-    const elapsed = Date.parse(capture.capturedAt) - Date.parse(previous?.capturedAt);
-    const comparable = result.usable && old?.usable && old.analysisVersion === plantEngine.VERSION
-      && sameRegion && sameLight && shift < 0.015 && similarBox
-      && Math.abs(result.averageBrightness - old.averageBrightness) < 10;
-    const growth = comparable && elapsed > 60000 ? result.plantAreaPercent - old.plantAreaPercent : null;
-    return {
+    const analysis = {
       ...capture, timestamp: new Date().toISOString(), ...plantClassification(result),
       frames: frames.map((frame) => frame.capture),
       metrics: {
         analysisVersion: plantEngine.VERSION, usable: result.usable, roi: leafRegion,
         plantAreaPercent: +result.plantAreaPercent.toFixed(2),
+        areaMeasurement: result.areaMeasurement ? {
+          min: Math.floor(result.areaMeasurement.min * 100) / 100,
+          max: Math.ceil(result.areaMeasurement.max * 100) / 100,
+          samples: result.areaMeasurement.samples
+        } : null,
         suspectSpotPercent: result.suspectSpotPercent === null ? null : +result.suspectSpotPercent.toFixed(2),
+        yellowPercent: result.yellowPercent === null ? null : +result.yellowPercent.toFixed(2),
+        yellowRegionCount: result.yellowRegions.filter((region) => region.repeated).length,
+        yellowTentativePixels: result.yellowTentativePixels,
+        yellowRegions: result.yellowRegions,
         tentativeSpotPercent: result.leafPixels ? +(result.tentativePixels / result.leafPixels * 100).toFixed(2) : null,
         regionCount: result.regions.filter((region) => region.repeated).length,
         tentativeRegionCount: result.regions.filter((region) => !region.repeated).length,
         regions: result.regions, quality: result.quality,
         stability: { label: result.stable ? "Estable" : "Variable" },
-        trend: { label: growth === null ? "Sin base" : Math.abs(growth) < 0.5 ? "Sin cambio" : "Cambio" },
-        growthDeltaPercent: growth === null ? null : +growth.toFixed(2),
         boundingBox: result.boundingBox, focusCrop: getPlantCrop(result),
         averageBrightness: result.averageBrightness,
         frameCount: result.frameCount, comparableFrames: result.comparableFrames,
         sampleWidth: result.width, sampleHeight: result.height
       }
     };
+    analysis.metrics.trend = global.HydroVisionPlantTrends.compareHistory(analysis,
+      [...(currentPlantVision.history || []), currentPlantVision.latest].filter(Boolean));
+    analysis.metrics.growthDeltaPercent = analysis.metrics.trend.deltaPercent;
+    return analysis;
   }
 
   async function restorePlantPreview(latest, key) {
@@ -1037,6 +1038,7 @@
       plantVisionStatus.textContent = "Análisis pendiente";
       plantVisionDetail.textContent = plantVisionError + " La foto anterior no es un análisis nuevo.";
       plantVisionSpots.textContent = "--";
+      plantVisionYellow.textContent = "--";
       plantVisionGrowth.textContent = "--";
       return;
     }
@@ -1047,17 +1049,38 @@
     plantVisionStatus.className = `badge plant-vision__status plant-vision__status--${latest.status || "warning"}`;
     plantVisionStatus.textContent = currentVersion ? latest.label : "Análisis anterior";
     plantVisionArea.textContent = toPercent(metrics.plantAreaPercent);
+    const area = metrics.areaMeasurement;
+    plantVisionArea.title = currentVersion && area
+      ? `Área observada: ${area.min.toFixed(2)}–${area.max.toFixed(2)} % en ${area.samples} fotos comparables.` : "";
     plantVisionGrowth.textContent = Number.isFinite(metrics.growthDeltaPercent) && currentVersion
       ? `${metrics.growthDeltaPercent >= 0 ? "+" : ""}${metrics.growthDeltaPercent.toFixed(1)} pp` : "--";
     plantVisionSpots.textContent = currentVersion ? toPercent(metrics.suspectSpotPercent) : "--";
+    plantVisionYellow.textContent = currentVersion
+      ? metrics.yellowTentativePixels && !metrics.yellowRegionCount ? "Por revisar" : toPercent(metrics.yellowPercent) : "--";
+    plantVisionYellow.title = "Superficie amarillenta repetida respecto de la unión del follaje segmentado y las zonas amarillentas repetidas; no es un porcentaje de enfermedad.";
     plantVisionConfidence.textContent = currentVersion ? metrics.quality?.usable ? "Apta" : "Insuficiente" : "--";
     plantVisionStability.textContent = metrics.stability?.label || "--";
-    plantVisionTrend.textContent = currentVersion ? metrics.trend?.label || "--" : "--";
+    const trendLabels = { "clipped-leaf": "Área recortada", "no-baseline": "Sin base", "change": metrics.growthDeltaPercent > 0 ? "Mayor área" : "Menor área" };
+    plantVisionTrend.textContent = currentVersion ? trendLabels[metrics.trend?.reason] || metrics.trend?.label || "--" : "--";
     plantOriginal.href = latest.imageUrl;
     plantOriginal.hidden = false;
     const regions = currentVersion ? ` ${metrics.regionCount || 0} zona(s) repetidas, ${metrics.tentativeRegionCount || 0} por revisar.` : "";
     plantVisionDetail.textContent = (currentVersion ? latest.detail : "Pendiente de evaluar con el análisis actualizado.")
       + regions + ` Captura ${formatClock(new Date(latest.capturedAt))}.`;
+    if (currentVersion && metrics.yellowRegionCount) plantVisionDetail.textContent += ` ${metrics.yellowRegionCount} zona(s) amarillentas repetidas.`;
+    if (currentVersion && metrics.trend) {
+      const messages = {
+        "invalid-measurement": "Cambio de área no evaluable con estas fotos.",
+        "clipped-leaf": "La hoja está cortada por el encuadre o la selección.",
+        "too-recent": "La referencia comparable tiene menos de una hora.",
+        "no-baseline": "Sin referencia compatible entre una hora y siete días.",
+        "within-variation": "La diferencia de área no supera la variación entre fotos.",
+        "change": "Cambio de área visible; no equivale a crecimiento físico."
+      };
+      plantVisionDetail.textContent += " " + (messages[metrics.trend.reason] || "");
+      if (metrics.trend.baseline) plantVisionDetail.textContent += " Base: "
+        + new Date(metrics.trend.baseline.capturedAt).toLocaleString("es-AR") + ".";
+    }
     const key = latest.timestamp + latest.imageUrl;
     if (previewKey !== key) {
       previewKey = key;
@@ -1099,6 +1122,7 @@
       plantVisionStatus.textContent = "Análisis pendiente";
       plantVisionDetail.textContent = error.message;
       plantVisionSpots.textContent = "--";
+      plantVisionYellow.textContent = "--";
       showTransientStatus("No se pudo completar el análisis", "warning");
       return;
     } finally {
