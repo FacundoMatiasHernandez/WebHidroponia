@@ -47,6 +47,7 @@
   const plantVisionGrowth = document.getElementById("plantVisionGrowth");
   const plantVisionSpots = document.getElementById("plantVisionSpots");
   const plantVisionYellow = document.getElementById("plantVisionYellow");
+  const plantVisionDetailScore = document.getElementById("plantVisionDetailScore");
   const plantVisionConfidence = document.getElementById("plantVisionConfidence");
   const plantVisionStability = document.getElementById("plantVisionStability");
   const plantVisionTrend = document.getElementById("plantVisionTrend");
@@ -909,11 +910,7 @@
   }
 
   function getPlantCrop(result) {
-    if (selectingLeaf || !result.boundingBox) return { x: 0, y: 0, width: 1, height: 1 };
-    const box = leafRegion || result.boundingBox;
-    const size = Math.min(1, Math.max(0.18, box.width * 1.18, box.height * 1.18));
-    return { x: clamp(box.x + box.width / 2 - size / 2, 0, 1 - size),
-      y: clamp(box.y + box.height / 2 - size / 2, 0, 1 - size), width: size, height: size };
+    return plantEngine.focusCrop({ ...result, roi: leafRegion }, selectingLeaf);
   }
 
   function drawPlantPreview() {
@@ -921,9 +918,9 @@
     const { result, image } = plantPreview;
     const crop = getPlantCrop(result);
     plantVisionCanvas.width = 960;
-    plantVisionCanvas.height = Math.round(960 * image.naturalHeight / image.naturalWidth);
+    plantVisionCanvas.height = Math.round(960 * crop.height * image.naturalHeight / (crop.width * image.naturalWidth));
     plantVisionCanvas.hidden = false;
-    plantVisionCanvas.style.aspectRatio = image.naturalWidth + " / " + image.naturalHeight;
+    plantVisionCanvas.style.aspectRatio = plantVisionCanvas.width + " / " + plantVisionCanvas.height;
     const ctx = plantVisionCanvas.getContext("2d");
     const w = plantVisionCanvas.width, h = plantVisionCanvas.height;
     ctx.drawImage(image, crop.x * image.naturalWidth, crop.y * image.naturalHeight,
@@ -965,6 +962,8 @@
     }
     if (!result.stable) return { status: "warning", label: "Repetir captura",
       detail: "Las fotos no son comparables por movimiento o cambios de luz." };
+    if (result.yellowOutsidePixels > 100 && !result.yellowPixels) return { status: "warning", label: "Selección incompleta",
+      detail: "Hay tejido de color amarillento fuera del área seleccionada. La selección no cubre toda la zona visible." };
     if (result.yellowPixels) return { status: "attention", label: result.repeatedPixels ? "Manchas y amarillamiento" : "Amarillamiento visible",
       detail: "Hay zonas amarillentas amplias que se repiten cerca del follaje. Es una señal visual, no un diagnóstico de su causa." };
     if (result.yellowTentativePixels && !result.repeatedPixels) return { status: "warning", label: "Color por revisar",
@@ -994,6 +993,7 @@
         yellowPercent: result.yellowPercent === null ? null : +result.yellowPercent.toFixed(2),
         yellowRegionCount: result.yellowRegions.filter((region) => region.repeated).length,
         yellowTentativePixels: result.yellowTentativePixels,
+        yellowOutsidePixels: result.yellowOutsidePixels,
         yellowRegions: result.yellowRegions,
         tentativeSpotPercent: result.leafPixels ? +(result.tentativePixels / result.leafPixels * 100).toFixed(2) : null,
         regionCount: result.regions.filter((region) => region.repeated).length,
@@ -1017,7 +1017,6 @@
       const captures = latest.frames?.length ? latest.frames : [latest];
       const frames = await Promise.all(captures.map(loadPlantImage));
       if (key !== previewKey || plantVisionBusy) return;
-      leafRegion = latest.metrics?.roi || null;
       const result = analyzePlantFrames(frames);
       plantFrames = frames;
       plantPreview = { result, image: frames[result.selectedIndex].image };
@@ -1039,6 +1038,7 @@
       plantVisionDetail.textContent = plantVisionError + " La foto anterior no es un análisis nuevo.";
       plantVisionSpots.textContent = "--";
       plantVisionYellow.textContent = "--";
+      plantVisionDetailScore.textContent = "--";
       plantVisionGrowth.textContent = "--";
       return;
     }
@@ -1055,8 +1055,15 @@
     plantVisionGrowth.textContent = Number.isFinite(metrics.growthDeltaPercent) && currentVersion
       ? `${metrics.growthDeltaPercent >= 0 ? "+" : ""}${metrics.growthDeltaPercent.toFixed(1)} pp` : "--";
     plantVisionSpots.textContent = currentVersion ? toPercent(metrics.suspectSpotPercent) : "--";
+    const yellowReasons = new Set((metrics.yellowRegions || []).filter((r) => !r.repeated).map((r) => r.reason));
+    const yellowPending = metrics.yellowOutsidePixels > 100 || yellowReasons.has("selection-edge") ? "Área incompleta"
+      : yellowReasons.has("clipped-channel") ? "Exceso de luz" : "Por revisar";
     plantVisionYellow.textContent = currentVersion
-      ? metrics.yellowTentativePixels && !metrics.yellowRegionCount ? "Por revisar" : toPercent(metrics.yellowPercent) : "--";
+      ? !metrics.yellowRegionCount && (metrics.yellowTentativePixels || metrics.yellowOutsidePixels > 100)
+        ? yellowPending : toPercent(metrics.yellowPercent) : "--";
+    const detailValue = metrics.quality?.detail?.value;
+    plantVisionDetailScore.textContent = currentVersion && Number.isFinite(detailValue) ? detailValue.toFixed(2) : "--";
+    plantVisionDetailScore.title = "Detalle relativo dentro del follaje, no porcentaje ni autofocus. Comparar con la misma hoja, luz, distancia y resolución.";
     plantVisionYellow.title = "Superficie amarillenta repetida respecto de la unión del follaje segmentado y las zonas amarillentas repetidas; no es un porcentaje de enfermedad.";
     plantVisionConfidence.textContent = currentVersion ? metrics.quality?.usable ? "Apta" : "Insuficiente" : "--";
     plantVisionStability.textContent = metrics.stability?.label || "--";
@@ -1068,6 +1075,12 @@
     plantVisionDetail.textContent = (currentVersion ? latest.detail : "Pendiente de evaluar con el análisis actualizado.")
       + regions + ` Captura ${formatClock(new Date(latest.capturedAt))}.`;
     if (currentVersion && metrics.yellowRegionCount) plantVisionDetail.textContent += ` ${metrics.yellowRegionCount} zona(s) amarillentas repetidas.`;
+    if (currentVersion && (metrics.yellowTentativePixels || metrics.yellowOutsidePixels > 100)) {
+      const reason = yellowPending === "Área incompleta" ? "Parte del amarillo está fuera de la selección."
+        : yellowPending === "Exceso de luz" ? "La saturación de color impide medir parte del amarillo."
+        : "Parte del amarillo no se repite con suficiente consistencia.";
+      plantVisionDetail.textContent += " " + reason;
+    }
     if (currentVersion && metrics.trend) {
       const messages = {
         "invalid-measurement": "Cambio de área no evaluable con estas fotos.",
@@ -1084,6 +1097,8 @@
     const key = latest.timestamp + latest.imageUrl;
     if (previewKey !== key) {
       previewKey = key;
+      // Restore the selection before asynchronous image loading or a new capture can begin.
+      leafRegion = latest.metrics?.roi || null;
       restorePlantPreview(latest, key);
     }
   }
@@ -1123,6 +1138,7 @@
       plantVisionDetail.textContent = error.message;
       plantVisionSpots.textContent = "--";
       plantVisionYellow.textContent = "--";
+      plantVisionDetailScore.textContent = "--";
       showTransientStatus("No se pudo completar el análisis", "warning");
       return;
     } finally {

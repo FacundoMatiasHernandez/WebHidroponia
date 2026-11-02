@@ -6,3 +6,9 @@ hydrovision-live.*.log
 firmware/**/secrets.h
 __pycache__/
 *.pyc
+.env.camera.local
+node_modules/
+tmp/
+output/servo_mg995_test/build/
+output/servo_mg995_test/*.log
+output/servo_mg995_test/uno_before_test_*.hex

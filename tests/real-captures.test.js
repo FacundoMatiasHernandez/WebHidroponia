@@ -33,6 +33,46 @@ async function read(name, transform = (image) => image) {
   return vision.analyze(data, info.width, info.height);
 }
 
+const afternoonBursts = ["mtrlfx6w", "mtrlgf79", "mtrlgwmd", "mtrm2ncc", "mtrm3h43", "mtrm3r37", "mtrm43v3"];
+const afternoonAvailable = sharp && afternoonBursts.every((id) => [1, 2, 3].every((i) => fs.existsSync(path.join(dir, `plant-${id}-${i}.jpg`))));
+test("afternoon failures: complete yellow leaf persists across seven independent bursts", { skip: !afternoonAvailable }, async () => {
+  for (const id of afternoonBursts) {
+    const frames = await Promise.all([1, 2, 3].map((i) => read(`plant-${id}-${i}.jpg`)));
+    const result = vision.combine(frames);
+    assert.ok(result.yellowPixels > 10000, id + " lost the broad yellow leaf");
+    assert.ok(result.yellowRegions.some((r) => r.repeated && r.x > 0.45 && r.x < 0.65), id);
+    assert.ok(!result.yellowRegions.some((r) => r.repeated && r.y > 0.7), id + " marked the jar or desk");
+  }
+});
+test("real leaf detail declines with progressive blur", { skip: !afternoonAvailable }, async () => {
+  let previous = Infinity;
+  for (const sigma of [0, 1, 2, 4, 12]) {
+    const frame = await read("plant-mtrm43v3-2.jpg", (image) => sigma ? image.blur(sigma) : image);
+    assert.ok(frame.quality.detail.value < previous, `Blur ${sigma} should reduce detail`);
+    previous = frame.quality.detail.value;
+  }
+});
+test("afternoon yellow under moderate exposure stays a candidate", { skip: !afternoonAvailable }, async () => {
+  for (const brightness of [0.8, 0.9, 1, 1.05]) {
+    const frame = await read("plant-mtrm43v3-2.jpg", (image) => image.modulate({ brightness }));
+    assert.ok(frame.yellowRegions.some((r) => r.x > 0.45 && r.x < 0.65 && r.pixels > 10000), String(brightness));
+  }
+});
+test("afternoon yellow under mild channel drift stays a candidate", { skip: !afternoonAvailable }, async () => {
+  for (const gains of [[0.98, 1, 1.02], [1.02, 1, 0.98]]) {
+    const frame = await read("plant-mtrm43v3-2.jpg", (image) => image.linear(gains, [0, 0, 0]));
+    assert.ok(frame.yellowRegions.some((r) => r.x > 0.45 && r.x < 0.65 && r.pixels > 10000), JSON.stringify(gains));
+  }
+});
+test("new white-background burst retains yellow tissue and the brown tip", {
+  skip: !sharp || ![1, 2, 3].every((i) => fs.existsSync(path.join(dir, `plant-mtrmp176-${i}.jpg`)))
+}, async () => {
+  const result = vision.combine(await Promise.all([1, 2, 3].map((i) => read(`plant-mtrmp176-${i}.jpg`))));
+  assert.ok(result.usable);
+  assert.ok(result.yellowRegions.some((r) => r.repeated && r.x > 0.3 && r.x < 0.45 && r.pixels > 20000));
+  assert.ok(result.regions.some((r) => r.repeated && r.x > 0.67 && r.x < 0.75 && r.y > 0.65));
+});
+
 test("real camera: brown tip repeats, holes and bottle do not become repeated spots", { skip: !available }, async () => {
   const frames = await Promise.all(names.map((name) => read(name)));
   const result = vision.combine(frames);

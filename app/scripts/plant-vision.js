@@ -4,7 +4,7 @@
   else root.HydroVisionPlant = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function createPlantVision() {
   "use strict";
-  const VERSION = "leaf-pixel-v4.3";
+  const VERSION = "leaf-pixel-v4.4";
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const median = (values) => {
     if (!values.length) return 0;
@@ -70,6 +70,24 @@
     return { labels, items };
   }
 
+  function measureDetail(brightness, mask, width, height) {
+    // Smooth before measuring fine detail so sensor noise and leaf silhouettes weigh less.
+    const safe = morphology(mask, width, height, 4, true);
+    const sum = integral(brightness, width, height);
+    const smooth = new Float32Array(mask.length);
+    for (let y = 1; y < height - 1; y++) for (let x = 1; x < width - 1; x++) {
+      smooth[y * width + x] = sum(x, y, 1) / 9;
+    }
+    let energy = 0, count = 0;
+    for (let y = 4; y < height - 4; y += 2) for (let x = 4; x < width - 4; x += 2) {
+      const i = y * width + x;
+      if (!safe[i]) continue;
+      const laplacian = smooth[i - 2] + smooth[i + 2] + smooth[i - width * 2] + smooth[i + width * 2] - 4 * smooth[i];
+      energy += laplacian * laplacian; count++;
+    }
+    return { value: count >= 25 ? +(Math.sqrt(energy / count) * 255).toFixed(2) : null, samples: count };
+  }
+
   function analyze(data, width, height, options = {}) {
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 16 || height < 16
         || width * height > 4000000 || data.length !== width * height * 4) throw new Error("Invalid image dimensions");
@@ -97,7 +115,7 @@
     const gains = neutral.map((v) => clamp(gray / v, 0.8, 1.25));
     const redRatio = new Float32Array(n), blueRatio = new Float32Array(n);
     const brightness = new Float32Array(n), saturation = new Float32Array(n);
-    const green = new Uint8Array(n), background = new Uint8Array(n);
+    const green = new Uint8Array(n), greenContext = new Uint8Array(n), background = new Uint8Array(n);
     for (let i = 0; i < n; i++) {
       const r = data[i * 4] * gains[0], g = data[i * 4 + 1] * gains[1], b = data[i * 4 + 2] * gains[2];
       const hi = Math.max(r, g, b), lo = Math.min(r, g, b);
@@ -105,9 +123,9 @@
       brightness[i] = (r * 0.2126 + g * 0.7152 + b * 0.0722) / 255;
       saturation[i] = hi ? (hi - lo) / hi : 0;
       background[i] = 0;
-      green[i] = +(inRegion(i % width, Math.floor(i / width)) && !background[i]
-        && redRatio[i] < 0.97 && blueRatio[i] < 0.98 && redRatio[i] + blueRatio[i] < 1.84
+      greenContext[i] = +(redRatio[i] < 0.97 && blueRatio[i] < 0.98 && redRatio[i] + blueRatio[i] < 1.84
         && saturation[i] > 0.09 && brightness[i] > 0.055);
+      green[i] = +(greenContext[i] && inRegion(i % width, Math.floor(i / width)));
     }
     // Remove thin stems before reconstructing broad leaf surfaces, irrespective of position.
     const radius = Math.max(1, Math.round(width / 90));
@@ -153,33 +171,45 @@
     // Yellow tissue can lie outside the green reconstruction. Keep it separate from spot and growth masks.
     const yellowRaw = new Uint8Array(n);
     for (let i = 0; i < n; i++) {
-      yellowRaw[i] = +(inRegion(i % width, Math.floor(i / width)) && redRatio[i] > 1.02 && redRatio[i] < 1.48
+      yellowRaw[i] = +(redRatio[i] > 1.02 && redRatio[i] < 1.48
         && blueRatio[i] < 0.86 && saturation[i] > 0.18 && brightness[i] > 0.38 && brightness[i] < 0.94);
     }
     const yellowCore = morphology(morphology(yellowRaw, width, height, Math.max(1, Math.round(width / 300)), true),
       width, height, Math.max(1, Math.round(width / 300)), false);
     const yellowGroups = components(yellowCore, width, height);
-    const nearFoliage = morphology(mask, width, height, Math.max(4, Math.round(width * 0.08)), false);
-    const yellowCandidates = new Uint8Array(n), yellowRegions = [];
+    const contextOpened = options.roi ? morphology(morphology(greenContext, width, height, radius, true), width, height, radius, false) : opened;
+    const nearFoliage = morphology(contextOpened, width, height, Math.max(4, Math.round(width * 0.08)), false);
+    const yellowCandidates = new Uint8Array(n), yellowRegions = [], yellowDiagnostics = [];
+    let yellowOutsidePixels = 0;
     for (const c of yellowGroups.items) {
       const compactness = c.pixels / (c.width * c.height);
       if (c.pixels < Math.max(40, n * 0.0015) || Math.min(c.width, c.height) < Math.max(4, width * 0.015)
-          || compactness < 0.18 || compactness > 0.9 || Math.max(c.width, c.height) / Math.min(c.width, c.height) > 8) continue;
-      let nearbyPixels = 0, clippedPixels = 0;
+          || compactness < 0.18 || compactness > 0.9 || Math.max(c.width, c.height) / Math.min(c.width, c.height) > 8) {
+        if (c.pixels > 100) yellowDiagnostics.push({ pixels: c.pixels, compactness, reason: "shape" });
+        continue;
+      }
+      let nearbyPixels = 0, clippedPixels = 0, insidePixels = 0;
       for (let y = c.y; y < c.y + c.height; y++) for (let x = c.x; x < c.x + c.width; x++) {
         const i = y * width + x;
         if (yellowGroups.labels[i] !== c.id) continue;
         nearbyPixels += nearFoliage[i];
+        insidePixels += +inRegion(x, y);
         clippedPixels += +(Math.max(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]) >= 252);
       }
-      if (nearbyPixels / c.pixels < 0.1) continue;
+      // A large yellow leaf can touch green tissue along only a short edge.
+      if (nearbyPixels < Math.max(20, Math.min(c.pixels * 0.1, Math.min(c.width, c.height) * 2))) {
+        yellowDiagnostics.push({ pixels: c.pixels, nearbyPixels, reason: "isolated" }); continue;
+      }
+      yellowOutsidePixels += c.pixels - insidePixels;
+      if (!insidePixels) continue;
       const evaluable = clippedPixels / c.pixels <= 0.1;
+      yellowDiagnostics.push({ pixels: c.pixels, clippedFraction: clippedPixels / c.pixels, reason: evaluable ? "candidate" : "clipped-channel" });
       for (let y = c.y; y < c.y + c.height; y++) for (let x = c.x; x < c.x + c.width; x++) {
         const i = y * width + x;
-        if (yellowGroups.labels[i] === c.id) yellowCandidates[i] = evaluable ? 1 : 2;
+        if (yellowGroups.labels[i] === c.id && inRegion(x, y)) yellowCandidates[i] = evaluable ? 1 : 2;
       }
       yellowRegions.push({ id: c.id, x: c.x / width, y: c.y / height, width: c.width / width, height: c.height / height,
-        pixels: c.pixels, evaluable });
+        pixels: insidePixels, evaluable });
     }
     const leafGroups = components(mask, width, height);
     const reference = new Map();
@@ -258,9 +288,12 @@
       signature[cell] += brightness[i]; cells[cell]++;
     }
     for (let i = 0; i < signature.length; i++) signature[i] /= Math.max(1, cells[i]);
+    const detailMask = Uint8Array.from(mask, (value, i) => +(value || yellowCandidates[i]));
+    const detail = measureDetail(brightness, detailMask, width, height);
     return {
       width, height, mask, candidates, regions, signature, yellowCandidates, yellowRegions, yellowLabels: yellowGroups.labels, roi: options.roi || null,
-      leafPixels, suspectPixels, quality: { usable: issues.length === 0, issues, score: qualityScore, sharpness: +sharpness.toFixed(2) },
+      yellowDiagnostics, yellowOutsidePixels,
+      leafPixels, suspectPixels, quality: { usable: issues.length === 0, issues, score: qualityScore, sharpness: +sharpness.toFixed(2), detail },
       averageBrightness: +averageBrightness.toFixed(2), averageSaturation: leafPixels ? satSum / leafPixels * 100 : 0,
       plantAreaPercent: leafPixels / n * 100, suspectSpotPercent: leafPixels ? suspectPixels / leafPixels * 100 : null,
       centroid: leafPixels ? { x: xSum / leafPixels / width, y: ySum / leafPixels / height } : null,
@@ -306,7 +339,8 @@
         supported += +(count >= 2);
       }
       return (frame.quality.usable ? 10000 : 0) + peers[index].filter(Boolean).length * 1000
-        + (supported >= 20 ? 100 : 0) + (yellowSupported >= 40 ? 50 : 0) + frame.quality.score;
+        + (supported >= 20 ? 100 : 0) + (yellowSupported >= 40 ? 50 : 0)
+        + Math.min(40, frame.quality.detail?.value || 0) + frame.quality.score * 0.01;
     });
     let selectedIndex = 0;
     for (let i = 1; i < frames.length; i++) {
@@ -390,7 +424,8 @@
         yellowRepeated[i] = +repeated;
         if (overlay[i] !== 2) overlay[i] = repeated ? 3 : 1;
       }
-      return { ...region, repeated };
+      return { ...region, repeated, reason: !usable ? "quality-or-motion" : !region.evaluable ? "clipped-channel"
+        : cut ? "selection-edge" : !repeated ? "not-repeated" : "repeated" };
     });
     for (let i = 0; i < overlay.length; i++) {
       if (best.yellowCandidates[i]) {
@@ -406,5 +441,20 @@
       frameCount: frames.length, comparableFrames: comparable.length };
   }
 
-  return { VERSION, analyze, combine, compareFrames };
+  function focusCrop(result, selecting = false) {
+    if (selecting) return { x: 0, y: 0, width: 1, height: 1 };
+    const boxes = [result.boundingBox, ...(result.yellowRegions || [])].filter(Boolean);
+    if (!boxes.length && !result.roi) return { x: 0, y: 0, width: 1, height: 1 };
+    const box = result.roi || {
+      x: Math.min(...boxes.map((b) => b.x)), y: Math.min(...boxes.map((b) => b.y)),
+      width: Math.max(...boxes.map((b) => b.x + b.width)) - Math.min(...boxes.map((b) => b.x)),
+      height: Math.max(...boxes.map((b) => b.y + b.height)) - Math.min(...boxes.map((b) => b.y))
+    };
+    const width = Math.min(1, Math.max(0.18, box.width * 1.12));
+    const height = Math.min(1, Math.max(0.18, box.height * 1.12));
+    return { x: clamp(box.x + box.width / 2 - width / 2, 0, 1 - width),
+      y: clamp(box.y + box.height / 2 - height / 2, 0, 1 - height), width, height };
+  }
+
+  return { VERSION, analyze, combine, compareFrames, focusCrop };
 });

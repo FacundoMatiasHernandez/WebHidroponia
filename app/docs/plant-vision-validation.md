@@ -2,6 +2,20 @@
 
 Fecha: 2026-09-04. Version del analisis: `leaf-pixel-v4.1`.
 
+## Nitidez y fallos intermitentes: 2026-09-07, v4.4
+
+Se reprodujeron las entradas fallidas de la tarde. La condicion de proximidad descartaba regiones amarillas de unos 27000-32000 pixeles cuando la mascara verde reconstruida se reducia, aunque seguian cerca de verde reconocible antes de la reconstruccion. Ademas, cambios de posicion dejaron parte de la hoja fuera de la seleccion, fragmentandola antes de evaluar su forma. No era solamente un umbral de color.
+
+Cambios: contexto verde tras apertura, soporte de proximidad limitado por el lado corto de cada region y evaluacion de forma amarilla en la imagen completa antes del recorte. Solo se marcan pixeles dentro de la seleccion. Las superficies fuera de ella se informan como area incompleta; recortes, canales saturados y falta de repeticion conservan motivos diferenciados. No se eliminaron los controles de movimiento, calidad ni falsos positivos por formas rectangulares. Un objeto de color/forma similar cercano al follaje sigue siendo un riesgo.
+
+La nitidez relativa usa RMS de un Laplaciano de paso 2 sobre luminancia promediada en 3x3, dentro de la union foliar erosionada 4 pixeles. No mide foco optico, no es un porcentaje y depende de textura, exposicion, escala y segmentacion. Tiene menos peso del contorno y del ruido fino. La seleccion de foto mantiene prioridad por calidad, comparabilidad y evidencia repetida; usa detalle para desempatar en vez del puntaje general frecuentemente saturado. En una foto real con desenfoque progresivo sigma 0/1/2/4/12, el detalle descendio aproximadamente 3.72/2.97/2.03/1.21/0.50. Esto verifica sensibilidad al desenfoque sintetico, no calibra una distancia de foco ni garantiza detalle para insectos pequenos.
+
+La vista amplificada ajusta ancho/alto independientemente sin deformar la imagen y conserva el modo de seleccion en coordenadas de imagen completa. Se corrigio una carrera: la region persistida se carga sin esperar la descarga asincrona de fotos. No se aplican filtros de realce artificial ni cambios de firmware.
+
+Pruebas: 58 casos, con cuatro nuevos sinteticos de detalle/seleccion/crop y cinco reales nuevos: siete rafagas distintas de la tarde con recuperacion del amarillo, desenfoque progresivo, brillo 0.8-1.05, pequenas ganancias de canal y una nueva rafaga con fondo blanco (`mtrmp176`). Se conservan las pruebas de punta marron, sombras, agujeros, sobreexposicion y movimiento. Las distintas rafagas siguen siendo de una sola planta, no un conjunto independiente para estimar precision universal.
+
+Prueba real desde la pagina: captura estable con una zona amarilla (33.52% de la superficie evaluada por la definicion anterior), una mancha repetida en la punta y detalle 3.32. Es salida del algoritmo, no severidad de enfermedad. Se verifico tambien un resultado no cuantitativo por movimiento, recarga persistente y movil 390x844 sin desbordamiento. Las fotos y el historial permanecen locales y no se alteraron fechas para las pruebas.
+
 ## Amarillamiento: 2026-09-07, v4.3
 
 Se agrega una mascara independiente de regiones amarillo-ocre amplias proximas al follaje. Usa relaciones de canales tras la correccion limitada de blanco, apertura morfologica, superficie/forma y soporte temporal. Los agujeros no se rellenan; las regiones recortadas, saturadas o sin repeticion quedan candidatas. No se cambian los umbrales de manchas anteriores ni la mascara utilizada para comparar area a lo largo del tiempo. El rojo tiene prioridad visual en el solapamiento con amarillamiento.

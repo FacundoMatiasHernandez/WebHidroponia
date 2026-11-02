@@ -2,6 +2,37 @@
 
 Dashboard web para monitoreo de una huerta hidroponica con ESP32-S3, ESP32-CAM y analisis visual del cultivo.
 
+## Continuar desde otra notebook
+
+Guia completa: [Instalacion y traslado a otra PC](app/docs/new-notebook-setup.md).
+
+Con Git y Node.js 24 instalados, desde PowerShell:
+
+```powershell
+git clone https://github.com/FacundoMatiasHernandez/WebHidroponia.git
+cd WebHidroponia
+Copy-Item .env.camera.example .env.camera.local
+# Editar CAMERA_MJPEG_URL si cambio la IP de la ESP32-CAM.
+npm run start:camera
+```
+
+Abrir `http://localhost:4173/`. No hacen falta dependencias npm para ejecutar
+la web. Para trabajar sin camara: `npm start`.
+
+La plantilla de camara conserva QXGA y usa compresion 12 para foto y analisis,
+el ajuste local probado tras errores `FB-OVF`. El video mantiene su perfil.
+`npm start` no carga `.env.camera.local`; usar `npm run start:camera` para ello.
+
+La ESP32-S3 envia datos al `WEB_HOST` grabado en su firmware: al cambiar de PC
+hay que actualizar esa direccion si cambia la IP del servidor. Las fotos,
+el historial y las credenciales son locales y no viajan con `git clone`.
+
+Documentos incluidos (edicion de septiembre de 2026, anterior al ajuste local
+de compresion de octubre):
+
+- [Documentacion tecnica integral](output/pdf/HydroVision_Documentacion_Tecnica_Integral.pdf).
+- [Mapa conceptual](output/pdf/HydroVision_Mapa_Conceptual.pdf).
+
 ## Que incluye
 
 - Vista general de sensores ambientales y de agua.
@@ -45,11 +76,15 @@ node server.js
 
 La compresion predeterminada de foto y analisis es 8. La compresion anterior de 4 produjo cortes al fotografiar esta escena con menos flash. La resolucion se mantiene en 2048x1536; `CAMERA_ANALYSIS_JPEG_QUALITY` admite valores de 8 a 63.
 
-Las marcas rojas corresponden a regiones de color que se repiten y tienen suficiente superficie. Las amarillas son candidatas inciertas. No se diagnostican plagas ni se presenta un porcentaje de certeza medica/agronomica. Una foto sin calidad suficiente produce un resultado no evaluable, no un resultado saludable.
+Las marcas rojas corresponden a regiones de color que se repiten y tienen suficiente superficie. Las celestes son candidatas inciertas y el naranja oscuro indica amarillamiento repetido. No se diagnostican plagas ni se presenta un porcentaje de certeza medica/agronomica. Una foto sin calidad suficiente produce un resultado no evaluable, no un resultado saludable.
 
 El cambio de area se expresa en puntos porcentuales. Busca la referencia compatible mas reciente del historial, entre una hora y siete dias de antiguedad, con la misma region, version, resolucion y protocolo de luz. Descarta hojas cortadas por la seleccion o el encuadre, cambios de iluminacion/posicion y fotos de la misma rafaga. Compara los rangos de area observados en las fotos estables de cada rafaga: si la diferencia no supera esa variacion y un margen de 0.5 puntos porcentuales, indica "No concluyente" y no informa un numero de crecimiento. El rango es repetibilidad observada, no un intervalo de confianza estadistico. No equivale a crecimiento fisico medido en centimetros; cambios de postura o color tambien pueden alterar el area segmentada.
 
-Las marcas cortadas por el borde de una seleccion manual quedan como candidatas por revisar. La version `leaf-pixel-v4.3` requiere capturas evaluadas con esta version para comparar areas; los resultados anteriores se conservan, pero no se mezclan como referencias compatibles.
+Las marcas cortadas por el borde de una seleccion manual quedan como candidatas por revisar. La version `leaf-pixel-v4.4` requiere capturas evaluadas con esta version para comparar areas; los resultados anteriores se conservan, pero no se mezclan como referencias compatibles.
+
+`Detalle hoja` mide detalle fino dentro de las superficies foliares tras un suavizado limitado que reduce la influencia del ruido. Es una medida relativa, no porcentaje, distancia de enfoque ni autofocus. Entre fotos comparables con evidencia repetida, se prioriza este detalle en lugar de depender del puntaje general de calidad, que podia saturarse en 95. La ampliacion conserva las proporciones y ajusta ancho y alto por separado para mostrar menos fondo. No se aplica enfoque artificial a los pixeles analizados ni se mueve la lente.
+
+El amarillo utiliza el contexto verde previo a la reconstruccion restrictiva, con soporte de proximidad limitado por el borde de la region, no por una fraccion fija de toda una hoja grande. Detecta regiones completas antes de aplicar la seleccion manual: si esta las corta o deja fuera, informa area incompleta; si se saturan los canales, informa exceso de luz. Esas advertencias no se presentan como ausencia de amarillo. La seleccion persistida se restaura antes de cargar las fotos para evitar que una captura inmediata la pierda.
 
 El amarillamiento se evalua por separado: superficies amplias amarillo-ocre, con forma compatible y cercanas al follaje segmentado, repetidas en al menos dos fotos comparables. No depende de que toda la hoja siga siendo verde. Se muestra en naranja oscuro; las manchas conservan el rojo y las candidatas inciertas aparecen en celeste. El porcentaje usa la union del follaje segmentado y las superficies amarillentas repetidas, sin duplicar pixeles; no es porcentaje de enfermedad. Las mascaras pueden solaparse y sus porcentajes no se suman. El area usada para comparar crecimiento mantiene su segmentacion previa, sin incorporar automaticamente toda superficie amarilla.
 
@@ -61,7 +96,7 @@ Es un filtro de color/forma, no identificacion semantica de hojas ni diagnostico
 node --test tests/*.test.js
 ```
 
-Las pruebas sinteticas y HTTP no requieren dependencias. Las ocho pruebas de fotos reales/referencia necesitan `sharp` y el corpus local, excluido de Git; se omiten explicitamente cuando no estan disponibles. `node tests/inspect-captures.js` procesa ese corpus y genera mascaras en `data/vision-validation/`. Detalles y limites en `app/docs/plant-vision-validation.md`.
+Las pruebas sinteticas y HTTP no requieren dependencias. Las trece pruebas de fotos reales/referencia necesitan `sharp` y el corpus local, excluido de Git; se omiten explicitamente cuando no estan disponibles. `node tests/inspect-captures.js` procesa ese corpus y genera mascaras en `data/vision-validation/`. `node tests/audit-vision-history.js 14` reproduce las ultimas 14 entradas y muestra motivos de descarte sin cambiar el historial. Detalles y limites en `app/docs/plant-vision-validation.md`.
 
 Si queres reiniciar el estado persistido:
 

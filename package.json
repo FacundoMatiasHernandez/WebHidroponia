@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --test tests/*.test.js",
     "start": "node server.js",
+    "start:camera": "node --env-file=.env.camera.local server.js",
     "reset-data": "node -e \"require('fs').rmSync('data/runtime-state.json',{force:true})\""
   }
 }

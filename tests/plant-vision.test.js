@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { analyze, combine } = require("../app/scripts/plant-vision");
+const { analyze, combine, focusCrop } = require("../app/scripts/plant-vision");
 
 function scene({ spot = false, hole = false, shadow = false, exposure = 1, tint = [1, 1, 1], shift = 0, smooth = false, empty = false,
   yellowLeaf = false, yellowRectangle = false, yellowHole = false, yellowClipped = false } = {}) {
@@ -156,6 +156,35 @@ test("yellow cut by manual region remains tentative", () => {
   const result = combine([run({ yellowLeaf: true }, roi), run({ yellowLeaf: true }, roi)]);
   assert.equal(result.yellowPixels, 0);
   assert.ok(result.yellowTentativePixels > 100);
+  assert.ok(result.yellowOutsidePixels > 100);
+  assert.ok(result.yellowRegions.some((r) => r.reason === "selection-edge"));
+});
+test("equally supported frames prefer measured detail instead of the saturated quality score", () => {
+  const frames = [run({ spot: true }), run({ spot: true }), run({ spot: true })];
+  frames.forEach((frame, index) => { frame.quality.detail.value = [1, 5, 2][index]; frame.quality.score = 95; });
+  assert.equal(combine(frames).selectedIndex, 1);
+});
+test("detail is unavailable without leaf pixels and rises with actual leaf texture", () => {
+  assert.equal(run({ empty: true }).quality.detail.value, null);
+  assert.ok(run({}).quality.detail.value > run({ smooth: true }).quality.detail.value);
+});
+test("a yellow region outside selection is not silently an absent region", () => {
+  const result = combine([run({ yellowLeaf: true }, { x: 0.1, y: 0.1, width: 0.5, height: 0.8 }),
+    run({ yellowLeaf: true }, { x: 0.1, y: 0.1, width: 0.5, height: 0.8 })]);
+  assert.ok(result.yellowOutsidePixels > 1000);
+  assert.equal(result.yellowPixels, 0);
+  assert.ok(result.yellowCandidates.every((value) => value === 0));
+});
+test("independent crop axes enlarge a narrow leaf without stretching or losing yellow tissue", () => {
+  const result = { boundingBox: { x: 0.6, y: 0.1, width: 0.2, height: 0.7 },
+    yellowRegions: [{ x: 0.4, y: 0.2, width: 0.2, height: 0.5 }] };
+  const crop = focusCrop(result);
+  assert.ok(crop.x <= 0.4 && crop.x + crop.width >= 0.8);
+  assert.ok(crop.y <= 0.1 && crop.y + crop.height >= 0.8);
+  assert.ok(crop.width < crop.height);
+  assert.deepEqual(focusCrop(result, true), { x: 0, y: 0, width: 1, height: 1 });
+  const edge = focusCrop({ roi: { x: 0.8, y: 0.8, width: 0.2, height: 0.2 } });
+  assert.ok(edge.x >= 0 && edge.x + edge.width <= 1 && edge.y + edge.height <= 1);
 });
 
 module.exports = { scene };
