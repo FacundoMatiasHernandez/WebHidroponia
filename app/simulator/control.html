@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HydroVision | Control de tablet</title>
+  <link rel="stylesheet" href="/app/styles/main.css"><link rel="stylesheet" href="/app/simulator/control.css">
+</head>
+<body>
+  <main class="lab">
+    <header class="lab-header"><div><p class="panel__eyebrow">Banco de pruebas / pantalla sincronizada</p><h1>Laboratorio de camara</h1></div><a class="button button--ghost" href="/">Volver a HydroVision</a></header>
+    <section class="panel lab-connect"><h2>1. Conectar la tablet</h2><p>En la tablet, abri este enlace y toca <strong>Iniciar pantalla</strong>. Mantene su brillo fijo y la pantalla encendida. No uses localhost en la tablet.</p><div id="displayLinks"></div><p id="connection" role="status">Consultando pantallas...</p><label>Pantalla elegida <select id="displaySelect"><option value="">Sin pantalla</option></select></label><p class="panel__note">El control remoto se permite solo desde esta PC. No se abren puertos del router ni se modifica el sitio publicado.</p></section>
+    <div class="lab-columns">
+      <section class="panel"><h2>2. Definir un caso</h2><p class="panel__note"><strong>Perfil exclusivo tablet-leaf-v1.</strong> Una sola silueta, amarillo por zonas y firmas de dano ampliadas para esta camara. La tira inferior de colores debe quedar dentro de la foto. No es reconocimiento de insectos reales.</p><div class="lab-presets"><button class="button button--ghost" data-preset="healthy">Hoja sana</button><button class="button button--ghost" data-preset="yellow">Amarillo 25%</button><button class="button button--ghost" data-preset="aphids">Pulgones</button><button class="button button--ghost" data-preset="mixed">Danios mixtos</button></div>
+        <form id="caseForm"><fieldset id="caseFields"><label>Nombre del ensayo <input name="name" maxlength="80" value="Hoja sana"></label><div id="sliders"></div><div class="lab-settings"><label>Fondo <select name="background"><option value="gray">Gris neutro</option><option value="light">Claro</option><option value="dark">Oscuro</option></select></label><label>Dia <input name="day" type="number" min="0" max="30" step="1" value="0"></label><label>Tamano <input name="zoom" type="number" min="0.75" max="1.5" step="0.05" value="0.85"></label><label>Giro (grados) <input name="rotation" type="number" min="-180" max="180" step="1" value="0"></label></div><label class="lab-check"><input name="chart" type="checkbox"> Mostrar patron de enfoque en vez de hoja</label><button class="button" type="submit">Aplicar en la tablet</button></fieldset></form>
+        <p class="panel__note">Amarillo define la fraccion coloreada de la lamina antes de superponer danos. Las intensidades de plaga cambian cantidad de marcas, no porcentaje de superficie. La camara mide por separado. No cambies brillo o posicion durante una comparacion.</p>
+      </section>
+      <section class="panel"><h2>3. Capturar el caso confirmado</h2><p>Se esperan las texturas originales, el dibujo y la confirmacion de la pantalla elegida. Durante la rafaga el caso queda bloqueado.</p><button class="button" id="capture" disabled>Capturar y evaluar</button><p id="message" role="status" aria-live="polite">Esperando una tablet conectada.</p><dl id="metrics" class="lab-metrics"></dl><img id="photo" alt="Captura real de la pantalla de prueba" hidden><details><summary>Parametros y confirmacion de la captura</summary><pre id="captureInfo">Todavia no hay captura.</pre></details><p class="panel__note">La carta de enfoque no se analiza como una hoja. Una foto de una pantalla no valida la deteccion de plagas reales; el foco optico del lente sigue siendo manual.</p></section>
+    </div>
+    <section class="panel"><h2>Ensayos recientes con la tablet</h2><p>El ajuste solicitado no se usa como deteccion. Se muestran mediciones de las fotos reales y tambien los ensayos que no pudieron evaluarse.</p><div id="trialResults" class="plant-trial-table"></div></section>
+  </main>
+  <script src="/app/scripts/tablet-profile.js"></script><script src="/app/scripts/plant-vision.js"></script><script src="/app/scripts/plant-report.js"></script><script src="/app/scripts/plant-trends.js"></script><script src="/app/simulator/control.js"></script>
+</body>
+</html>

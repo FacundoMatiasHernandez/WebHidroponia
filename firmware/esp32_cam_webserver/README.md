@@ -40,6 +40,20 @@ Preparacion del sketch:
 
 Variables opcionales del servidor:
 
+El firmware de este repositorio expone `sharpness` y `denoise` por `/control`.
+Para usarlos, cargar esta version de `app_httpd.cpp` en la camara. El servidor
+no envia esos controles a firmware antiguo salvo que se configuren explicitamente:
+`CAMERA_STILL_SHARPNESS`, `CAMERA_VIDEO_SHARPNESS` (-3 a 3) y
+`CAMERA_STILL_DENOISE`, `CAMERA_VIDEO_DENOISE` (0 a 8).
+Nitidez digital no equivale a autofocus: el controlador OV3660 no tiene soporte
+de autofocus. Usar valores moderados para no inventar contornos sobre las hojas.
+
+En la prueba local con tablet se dejo QXGA, calidad 10, `ae_level=-3`,
+`sharpness=2` y flash cero. Activar `denoise=1` provoco capturas HTTP 500;
+se verifico la recuperacion con `denoise=0`. No habilitar ese filtro sin
+probar foto y rafaga en el hardware concreto. Los reflejos de la pantalla
+y el foco del lente siguen siendo limitaciones fisicas.
+
 - `CAMERA_STILL_FRAMESIZE=19`
 - `CAMERA_STILL_QUALITY=8`
 - `CAMERA_VIDEO_FRAMESIZE=15`

@@ -102,3 +102,34 @@ test("missing, non-finite or inconsistent metrics do not produce numerical concl
 test("no historical reference stays explicitly unavailable", () => {
   assert.equal(compareHistory(entry(), [null, {}, entry()]).reason, "no-baseline");
 });
+
+test("tablet and real leaves never share an area comparison baseline", () => {
+  const current = entry(), baseline = entry(MIN_INTERVAL_MS);
+  current.captureTarget = "screen";
+  assert.equal(compareHistory(current, [baseline]).reason, "no-baseline");
+  baseline.captureTarget = "screen";
+  assert.ok(compareHistory(current, [baseline]).baseline);
+});
+
+test("detail and exposure changes invalidate old comparison baselines", () => {
+  const current = entry(), baseline = entry(MIN_INTERVAL_MS);
+  current.captureSettings = { quality: 8, sharpness: 2, ae_level: -3 };
+  assert.equal(compareHistory(current, [baseline]).reason, "no-baseline");
+  baseline.captureSettings = { ae_level: -3, sharpness: 2, quality: 8 };
+  assert.ok(compareHistory(current, [baseline]).baseline);
+  for (const key of Object.keys(baseline.captureSettings)) {
+    baseline.captureSettings[key]++;
+    assert.equal(compareHistory(current, [baseline]).reason, "no-baseline");
+    baseline.captureSettings[key]--;
+  }
+});
+
+test("different tablet scenarios never become a growth baseline", () => {
+  const current = entry(), baseline = entry(MIN_INTERVAL_MS);
+  current.simulator = { config: { yellow: 20, zoom: 1 } };
+  assert.equal(compareHistory(current, [baseline]).reason, "no-baseline");
+  baseline.simulator = { config: { zoom: 1, yellow: 20 } };
+  assert.ok(compareHistory(current, [baseline]).baseline);
+  baseline.simulator.config.yellow = 0;
+  assert.equal(compareHistory(current, [baseline]).reason, "no-baseline");
+});

@@ -3,232 +3,101 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HydroVision | Monitoreo de Huerta Hidropónica</title>
-  <meta
-    name="description"
-    content="Dashboard en tiempo real para monitoreo de una huerta hidropónica con ESP32, ESP32-CAM y análisis visual del cultivo."
-  >
+  <meta name="theme-color" content="#163e32">
+  <title>HydroVision | Tu cultivo, conectado</title>
+  <meta name="description" content="Monitoreo de cultivo, mediciones de sensores y control manual de bombas en un solo lugar.">
+  <link rel="preload" href="./app/styles/fonts/manrope-regular.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="./app/styles/fonts/manrope-extrabold.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="./app/styles/main.css">
 </head>
 <body>
-  <div class="page-shell">
-    <header class="hero">
-      <div class="hero__copy">
-        <p class="eyebrow">Monitoreo integral | Mock listo para integración</p>
-        <h1>HydroVision</h1>
-        <p class="hero__lead">
-          Supervisión en tiempo real para una huerta hidropónica con variables ambientales,
-          agua de proceso, alarmas operativas, cámara ESP32-CAM y visión del cultivo.
-        </p>
-        <div class="hero__actions">
-          <button id="toggleSimulation" class="button button--primary" type="button">Pausar simulación</button>
-          <button id="injectAlert" class="button button--ghost" type="button">Forzar evento crítico</button>
-        </div>
-      </div>
-      <aside class="hero__status">
-        <div class="status-card">
-          <span class="status-card__label">Estado general</span>
-          <strong id="globalStatus" class="status-pill status-pill--ok">Operación estable</strong>
-        </div>
-        <div class="status-card">
-          <span class="status-card__label">Última actualización</span>
-          <strong id="lastUpdate">--:--:--</strong>
-        </div>
-        <div class="status-card">
-          <span class="status-card__label">Modo de datos</span>
-          <strong id="dataMode">Backend mock</strong>
-        </div>
-        <div class="status-card">
-          <span class="status-card__label">Arquitectura activa</span>
-          <strong>ESP32-S3 / ESP32-CAM</strong>
-        </div>
-      </aside>
+  <a class="skip-link" href="#workspace">Ir al contenido</a>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-leaf" viewBox="0 0 24 24"><path d="M20 4c0 8-3 14-10 14-4 0-6-2-6-5C4 6 12 4 20 4Z"/><path d="m4 21 11-11M9 16v-5m0 5h5"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-pump" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M3 3v9h3m12 0h3v9M9 3h6M9 21h6"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 6h4l2-3h4l2 3h4a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="4"/></symbol>
+    <symbol id="i-trend" viewBox="0 0 24 24"><path d="M3 3v18h18M6 16l5-5 4 2 6-8"/></symbol>
+    <symbol id="i-device" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M8 2v3m8-3v3M8 19v3m8-3v3M2 8h3m-3 8h3m14-8h3m-3 8h3"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v5m0 3v1"/></symbol>
+    <symbol id="i-drop" viewBox="0 0 24 24"><path d="M12 2c-3 5-8 9-8 13a8 8 0 0 0 16 0c0-4-5-8-8-13Z"/><path d="M8 15a4 4 0 0 0 4 4"/></symbol>
+  </svg>
+
+  <aside class="app-sidebar" aria-label="Navegación principal">
+    <a class="brand" href="#resumen"><span class="brand__mark"><svg class="icon"><use href="#i-leaf"/></svg></span><span>HydroVision<small>CULTIVAR CON INFORMACIÓN</small></span></a>
+    <p class="nav-caption">TU INSTALACIÓN</p>
+    <nav class="main-nav">
+      <a class="nav-link is-active" href="#resumen" data-view-link="resumen" aria-current="page"><svg class="icon"><use href="#i-grid"/></svg><span>Resumen</span><span class="nav-link__index">01</span></a>
+      <a class="nav-link" href="#bombas" data-view-link="bombas"><svg class="icon"><use href="#i-pump"/></svg><span>Bombas</span><span id="navPumpCount" class="nav-count" hidden>0</span></a>
+      <a class="nav-link" href="#camara" data-view-link="camara"><svg class="icon"><use href="#i-camera"/></svg><span>Cámara</span></a>
+      <a class="nav-link" href="#tendencias" data-view-link="tendencias"><svg class="icon"><use href="#i-trend"/></svg><span>Tendencias</span></a>
+      <a class="nav-link" href="#equipo" data-view-link="equipo"><svg class="icon"><use href="#i-device"/></svg><span>Equipo</span></a>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="sidebar-connection"><span id="sidebarDot" class="connection-dot"></span><div><strong id="sidebarConnection">Esperando conexión</strong><small id="sidebarConnectionDetail">Equipo de sensores</small></div></div>
+      <p>Un mejor cultivo empieza<br>por conocer lo que pasa.</p>
+      <span class="sidebar-signature">HydroVision / Monitoreo de cultivo</span>
+    </div>
+  </aside>
+
+  <div class="app-main">
+    <header class="topbar">
+      <a class="mobile-brand" href="#resumen"><svg class="icon"><use href="#i-leaf"/></svg>HydroVision</a>
+      <div class="breadcrumb">Tu instalación <span>/</span> <strong id="viewBreadcrumb">Resumen</strong></div>
+      <div class="topbar__right"><span id="connectionBadge" class="connection-badge"><span class="connection-dot"></span><span id="dataMode">Conectando equipo</span></span><span class="last-update">Última lectura <strong id="lastUpdate">--:--:--</strong></span></div>
     </header>
 
-    <main class="dashboard">
-      <section class="panel panel--wide" aria-labelledby="overviewTitle">
-        <div class="panel__header">
-          <div>
-            <p class="panel__eyebrow">Resumen operativo</p>
-            <h2 id="overviewTitle">Variables críticas</h2>
-          </div>
-          <span class="badge">Actualización cada 2 segundos</span>
-        </div>
-        <div id="sensorGrid" class="sensor-grid" aria-live="polite"></div>
-      </section>
+    <main id="workspace" class="workspace" tabindex="-1">
+      <div class="page-heading"><div><p id="dataEyebrow" class="eyebrow">EL PULSO DE TU CULTIVO</p><h1 id="pageTitle">Resumen del cultivo</h1><p id="pageSubtitle">Lo importante, en una mirada.</p></div><div class="page-heading__meta"><span id="currentDate"></span><strong id="globalStatus" class="status-pill status-pill--neutral">Esperando lecturas</strong></div></div>
+      <div id="activePumpBar" class="active-pump-bar" hidden><svg class="icon"><use href="#i-pump"/></svg><div><strong id="activePumpText"></strong><span>El modo continuo no se detiene al cerrar esta página.</span></div><a class="button button--ghost" href="#bombas">Ver bombas</a><button id="quickStopAll" class="button button--stop" type="button" disabled>Apagar todas</button></div>
 
-      <section class="panel" aria-labelledby="cameraTitle">
-        <div class="panel__header">
-          <div>
-            <p class="panel__eyebrow">Video en vivo</p>
-            <h2 id="cameraTitle">Canal de cultivo</h2>
-          </div>
-          <span id="cameraBadge" class="badge badge--dark">Mock stream</span>
+      <section class="view" data-view="resumen" aria-label="Resumen del cultivo">
+        <div class="summary-grid">
+          <article class="summary-card"><span class="summary-card__label">Lecturas disponibles<svg class="icon"><use href="#i-device"/></svg></span><div><strong id="summaryReadings">--</strong><span id="summaryReadingsTotal">/ --</span></div><p id="summaryReadingsNote">Esperando al equipo</p></article>
+          <article class="summary-card"><span class="summary-card__label">Fuera de objetivo<svg class="icon"><use href="#i-alert"/></svg></span><div><strong id="summaryAttention">--</strong><span>parámetros</span></div><p id="summaryAttentionNote">Evaluando lecturas recientes</p></article>
+          <article class="summary-card"><span class="summary-card__label">Bombas en marcha<svg class="icon"><use href="#i-pump"/></svg></span><div><strong id="summaryPumps">--</strong><span id="summaryPumpTotal">/ --</span></div><p id="summaryPumpNote">Sin estado confirmado</p></article>
+          <article class="summary-card summary-card--accent"><span class="summary-card__label">Calidad de medición<svg class="icon"><use href="#i-drop"/></svg></span><div><strong id="summaryQuality">--</strong><span>por revisar</span></div><p id="summaryQualityNote">Calibración y disponibilidad</p></article>
         </div>
-        <div id="cameraToolbar" class="camera-toolbar" hidden>
-          <div class="camera-toolbar__actions">
-            <button id="cameraModeToggle" class="button button--ghost camera-toolbar__button" type="button">
-              Ver video en vivo
-            </button>
-            <button id="cameraRefreshSnapshot" class="button button--ghost camera-toolbar__button" type="button" hidden>
-              Actualizar imagen HD
-            </button>
-            <button id="cameraZoomToggle" class="button button--ghost camera-toolbar__button" type="button" hidden>
-              Ampliar imagen
-            </button>
-          </div>
-          <span id="cameraModeHint">Imagen HD cada pocos segundos</span>
-        </div>
-        <div class="camera-frame">
-          <canvas id="cameraCanvas" width="640" height="360" aria-label="Simulación de cámara de la huerta"></canvas>
-          <img id="cameraImage" class="camera-media" alt="Video en vivo de la huerta" hidden>
-          <iframe
-            id="cameraEmbed"
-            class="camera-media camera-media--embed"
-            title="Video en vivo de la huerta"
-            loading="lazy"
-            allow="autoplay; fullscreen"
-            hidden
-          ></iframe>
-          <div id="cameraFallback" class="camera-frame__fallback" hidden>
-            No se pudo abrir el stream. Revisá la URL configurada para la ESP32-CAM y la red local.
-          </div>
-          <div class="camera-frame__hud">
-            <span class="record-dot"></span>
-            <span id="cameraSourceLabel">ESP32-CAM OV3660</span>
-            <span id="cameraTimestamp">--:--:--</span>
-          </div>
-        </div>
-        <p id="cameraNote" class="panel__note">
-          Esta vista puede usar simulación o imagen real desde la ESP32-CAM configurada en el backend.
-        </p>
-      </section>
-
-      <section class="panel" aria-labelledby="plantVisionTitle">
-        <div class="panel__header">
-          <div>
-            <p class="panel__eyebrow">Visión del cultivo</p>
-            <h2 id="plantVisionTitle">Salud visual</h2>
-          </div>
-          <span id="plantVisionStatus" class="badge">Sin análisis</span>
-        </div>
-        <div class="plant-vision">
-          <div class="plant-vision__metrics">
-            <article>
-              <span>Área hojas</span>
-              <strong id="plantVisionArea">--</strong>
-            </article>
-            <article>
-              <span>Cambio de área</span>
-              <strong id="plantVisionGrowth">--</strong>
-            </article>
-            <article>
-              <span>Manchas repetidas</span>
-              <strong id="plantVisionSpots">--</strong>
-            </article>
-            <article>
-              <span>Amarillamiento</span>
-              <strong id="plantVisionYellow">--</strong>
-            </article>
-            <article>
-              <span>Detalle hoja</span>
-              <strong id="plantVisionDetailScore">--</strong>
-            </article>
-            <article>
-              <span>Calidad de foto</span>
-              <strong id="plantVisionConfidence">--</strong>
-            </article>
-            <article>
-              <span>Encuadre</span>
-              <strong id="plantVisionStability">--</strong>
-            </article>
-            <article>
-              <span>Tendencia</span>
-              <strong id="plantVisionTrend">--</strong>
-            </article>
-          </div>
-          <div class="plant-vision__tools">
-            <label><input id="plantVisionMarks" type="checkbox" checked> Marcas</label>
-            <button id="plantVisionSelect" class="button button--ghost" type="button" aria-pressed="false">Seleccionar hoja</button>
-            <button id="plantVisionReset" class="button button--ghost" type="button" hidden>Restablecer área</button>
-            <a id="plantVisionOriginal" target="_blank" rel="noopener" hidden>Foto original</a>
-          </div>
-          <canvas id="plantVisionCanvas" class="plant-vision__preview" width="960" height="720" aria-label="Foto de las hojas con marcas del análisis" hidden></canvas>
-          <div class="plant-vision__legend"><span class="plant-vision__key plant-vision__key--repeated"></span> Manchas <span class="plant-vision__key plant-vision__key--yellow"></span> Amarillamiento <span class="plant-vision__key plant-vision__key--tentative"></span> Por revisar</div>
-          <p id="plantVisionDetail" class="panel__note">
-            Sin capturas evaluadas.
-          </p>
-          <button id="plantVisionAnalyze" class="button button--primary" type="button">
-            Analizar ahora
-          </button>
+        <div class="overview-layout">
+          <section class="panel readings-panel" aria-labelledby="overviewTitle"><header class="panel__header"><div><p class="panel__eyebrow">MEDICIONES</p><h2 id="overviewTitle">Condiciones del cultivo</h2></div><span class="live-label"><span class="connection-dot"></span>Actualización continua</span></header><div id="sensorGrid"></div><p id="sensorDataNote" class="panel__note">Los valores aparecerán cuando el equipo envíe una lectura.</p></section>
+          <aside class="overview-aside">
+            <section class="panel attention-panel" aria-labelledby="alarmTitle"><header class="panel__header"><div><p class="panel__eyebrow">PARA REVISAR</p><h2 id="alarmTitle">Atención del cultivo</h2></div><span id="alarmCounter" class="badge badge--neutral">--</span></header><ul id="alarmList" class="alarm-list"></ul><button id="showAllAlerts" class="text-button" type="button" hidden>Ver todas las observaciones</button></section>
+            <section class="operator-note"><svg class="icon"><use href="#i-pump"/></svg><h3>El control está en tus manos.</h3><p>Iniciá un pulso o elegí funcionamiento continuo. La página espera la confirmación del equipo antes de mostrar un cambio.</p><a class="text-link" href="#bombas">Gestionar bombas <svg class="icon"><use href="#i-arrow"/></svg></a></section>
+          </aside>
         </div>
       </section>
 
-      <section class="panel" aria-labelledby="alarmTitle">
-        <div class="panel__header">
-          <div>
-            <p class="panel__eyebrow">Eventos</p>
-            <h2 id="alarmTitle">Alarmas y advertencias</h2>
-          </div>
-          <span id="alarmCounter" class="badge">0 activas</span>
-        </div>
-        <ul id="alarmList" class="alarm-list"></ul>
+      <section class="view" data-view="bombas" hidden aria-labelledby="opsTitle">
+        <section class="panel pump-panel"><header class="panel__header"><div><p id="controlEyebrow" class="panel__eyebrow">DOSIFICACIÓN MANUAL</p><h2 id="opsTitle">Control de bombas</h2></div><div id="relayControlToolbar" class="relay-control-toolbar" hidden><button id="relayUnlock" class="button button--ghost" type="button">Habilitar control</button><button id="relayStopAll" class="button button--stop" type="button" disabled>Apagar todas las bombas</button></div></header><p id="relayControlNote" class="relay-control-note" aria-live="polite"></p><p id="relayControlMessage" class="relay-control-message" role="status"></p><div id="actuatorGrid" class="ops-grid"></div><details class="help-note"><summary>Antes de poner una bomba en marcha</summary><p>Verificá la manguera, el recipiente y el líquido. Solo puede funcionar una bomba a la vez. En modo continuo, cerrar esta página no detiene la bomba; usá Apagar o Apagar todas. Si el equipo pierde comunicación con el servidor durante 30 segundos, corta las salidas y no las reenciende solo.</p><p>El estado informado corresponde a la salida eléctrica. No confirma caudal ni volumen dosificado. Usá funcionamiento continuo únicamente si la bomba y su fuente lo admiten, y bajo supervisión.</p></details></section>
       </section>
 
-      <section class="panel" aria-labelledby="opsTitle">
-        <div class="panel__header">
-          <div>
-            <p class="panel__eyebrow">Control mock</p>
-            <h2 id="opsTitle">Actuadores y servicios</h2>
-          </div>
-          <span id="serviceCounter" class="badge badge--dark">Sincronizando</span>
+      <section class="view" data-view="camara" hidden aria-labelledby="cameraTitle">
+        <div class="camera-layout">
+          <section class="panel camera-panel"><header class="panel__header"><div><p class="panel__eyebrow">OBSERVACIÓN REMOTA</p><h2 id="cameraTitle">Vista de cámara</h2></div><span id="cameraBadge" class="badge badge--neutral">Sin imagen</span></header><div id="cameraToolbar" class="camera-toolbar" hidden><div class="camera-toolbar__actions"><button id="cameraModeToggle" class="button button--ghost" type="button">Ver video en vivo</button><button id="cameraRefreshSnapshot" class="button button--primary" type="button" hidden>Actualizar imagen</button><button id="cameraZoomToggle" class="button button--ghost" type="button" hidden>Ampliar</button></div><span id="cameraModeHint"></span></div><div class="camera-frame"><img id="cameraImage" class="camera-media" alt="Imagen de la cámara de la instalación" hidden><iframe id="cameraEmbed" class="camera-media" title="Cámara de la instalación" loading="lazy" allow="autoplay; fullscreen" hidden></iframe><div id="cameraFallback" class="camera-frame__fallback">La imagen aparecerá al conectar la cámara.</div><div class="camera-frame__hud"><span id="cameraSourceLabel">Cámara de la instalación</span><span id="cameraTimestamp">Sin captura reciente</span></div></div><p id="cameraNote" class="panel__note">Imagen HD y video en vivo, según disponibilidad del equipo.</p></section>
+          <section class="panel vision-panel" aria-labelledby="plantVisionTitle"><header class="panel__header"><div><p class="panel__eyebrow">ANÁLISIS DE IMAGEN</p><h2 id="plantVisionTitle">Observación del cultivo</h2></div><span id="plantVisionStatus" class="badge badge--neutral">Sin análisis</span></header><div id="plantVisionEmpty" class="vision-empty"><svg class="icon"><use href="#i-leaf"/></svg><h3>Una imagen también cuenta.</h3><p>Cuando el análisis de plantas esté disponible, podrás revisar cambios de color y marcas observadas en las hojas.</p></div><div id="plantMetrics" class="plant-vision__metrics" hidden><article><span>Amarillamiento</span><strong id="plantVisionYellow">--</strong></article><article><span>Manchas repetidas</span><strong id="plantVisionSpots">--</strong></article><article><span>Área de hojas</span><strong id="plantVisionArea">--</strong></article><article><span>Cambio de área</span><strong id="plantVisionGrowth">--</strong></article><article><span>Detalle de imagen</span><strong id="plantVisionDetailScore">--</strong></article><article><span>Calidad de captura</span><strong id="plantVisionConfidence">--</strong></article><article><span>Encuadre</span><strong id="plantVisionStability">--</strong></article><article><span>Tendencia</span><strong id="plantVisionTrend">--</strong></article></div><div id="plantTools" class="plant-vision__tools" hidden><label><input id="plantVisionMarks" type="checkbox" checked> Mostrar marcas</label><button id="plantVisionSelect" class="button button--ghost" type="button" aria-pressed="false">Seleccionar hoja</button><button id="plantVisionReset" class="button button--ghost" type="button" hidden>Restablecer área</button><a id="plantVisionOriginal" target="_blank" rel="noopener" hidden>Ver foto original</a></div><canvas id="plantVisionCanvas" class="plant-vision__preview" width="960" height="720" aria-label="Hojas con las regiones observadas resaltadas" hidden></canvas><p id="plantVisionDetail" class="panel__note">Todavía no hay un análisis del cultivo disponible.</p><button id="plantVisionAnalyze" class="button button--primary" type="button" disabled>Analizar imagen</button><p class="vision-disclaimer">El análisis describe la imagen visible. No reemplaza una evaluación del cultivo ni identifica una plaga por sí solo.</p></section>
         </div>
-        <div id="actuatorGrid" class="ops-grid"></div>
-        <div id="serviceList" class="service-list"></div>
       </section>
 
-      <section class="panel panel--wide" aria-labelledby="historyTitle">
-        <div class="panel__header">
-          <div>
-            <p class="panel__eyebrow">Histórico reciente</p>
-            <h2 id="historyTitle">Tendencias por sensor</h2>
-          </div>
-          <span class="badge">Ventana de 40 muestras</span>
-        </div>
-        <div id="chartGrid" class="chart-grid"></div>
+      <section class="view" data-view="tendencias" hidden aria-labelledby="historyTitle">
+        <section class="panel history-panel"><header class="panel__header"><div><p class="panel__eyebrow">REGISTRO RECIENTE</p><h2 id="historyTitle">Cómo evolucionan las mediciones</h2></div><label class="history-selector">Parámetro<select id="historySensor"></select></label></header><div class="history-summary"><div><span>Última lectura</span><strong id="historyLast">--</strong></div><div><span>Mínima</span><strong id="historyMin">--</strong></div><div><span>Máxima</span><strong id="historyMax">--</strong></div><div><span>Promedio</span><strong id="historyMean">--</strong></div></div><div id="chartGrid" class="chart-grid"><canvas id="historyCanvas" width="1000" height="320" aria-label="Evolución de la medición seleccionada" role="img"></canvas></div><div class="chart-caption"><span id="historyWindow">Esperando lecturas</span><span id="historyRange"></span></div><p id="historyNote" class="panel__note">Los intervalos sin medición se muestran como interrupciones, no como valores cero.</p></section>
       </section>
 
-      <section class="panel" aria-labelledby="integrationTitle">
-        <div class="panel__header">
-          <div>
-            <p class="panel__eyebrow">Arquitectura</p>
-            <h2 id="integrationTitle">Ruta de datos</h2>
-          </div>
-          <span class="badge badge--dark">Hardware activo</span>
-        </div>
-        <ol class="stack-list">
-          <li>La ESP32-S3 envía mediciones por HTTP al backend.</li>
-          <li>El backend actualiza sensores, alarmas y servicios en tiempo real.</li>
-          <li>La ESP32-CAM entrega imagen HD y video MJPEG al dashboard.</li>
-          <li>La visión del cultivo analiza capturas para seguir crecimiento y manchas.</li>
-        </ol>
-        <div class="code-card">
-          <h3>Payload esperado</h3>
-          <pre><code>{
-  "sensorId": "water-ph",
-  "value": 6.21,
-  "unit": "pH",
-  "status": "ok",
-  "timestamp": "2026-03-16T20:00:00Z",
-  "source": "mock-backend"
-}</code></pre>
-        </div>
+      <section class="view" data-view="equipo" hidden aria-labelledby="equipmentTitle">
+        <section class="panel"><header class="panel__header"><div><p class="panel__eyebrow">CONECTIVIDAD</p><h2 id="equipmentTitle">Estado de la instalación</h2></div><span id="serviceCounter" class="badge badge--neutral">Conectando</span></header><div id="serviceList" class="service-list"></div><p class="panel__note">La computadora que aloja la página y el equipo de sensores deben permanecer encendidos y conectados a la misma red.</p></section>
+        <section class="panel equipment-details"><header class="panel__header"><div><p class="panel__eyebrow">DISPONIBILIDAD Y CALIBRACIÓN</p><h2>Estado de las mediciones</h2></div></header><div id="diagnosticTable" class="diagnostic-table"></div><details class="help-note"><summary>Detalles del equipo</summary><dl class="device-facts"><div><dt>Equipo de sensores</dt><dd id="sensorAddress">Sin información</dd></div><div><dt>Versión instalada</dt><dd id="firmwareVersion">Sin información</dd></div><div><dt>Último contacto</dt><dd id="deviceLastSeen">Sin información</dd></div></dl><div id="electricalDiagnostics"></div></details></section>
       </section>
+      <footer class="app-footer"><span>HydroVision</span><span>Información clara. Decisiones con respaldo.</span></footer>
     </main>
   </div>
 
+  <dialog id="relayLogin" class="operator-dialog" aria-labelledby="relayLoginTitle"><form id="relayLoginForm"><p class="panel__eyebrow">ACCESO AL EQUIPO</p><h2 id="relayLoginTitle">Habilitar control</h2><p>Ingresá la clave de control de la instalación. Podés solicitarla a su responsable.</p><label for="relayPassword">Clave de control</label><input id="relayPassword" type="password" autocomplete="current-password" required><p id="relayLoginError" class="form-error" role="alert"></p><div class="dialog-actions"><button id="relayLoginCancel" class="button button--ghost" type="button">Cancelar</button><button class="button button--primary" type="submit">Habilitar control</button></div></form></dialog>
+  <dialog id="pumpConfirm" class="operator-dialog" aria-labelledby="pumpConfirmTitle"><form method="dialog"><p class="panel__eyebrow">CONFIRMAR ACCIÓN</p><h2 id="pumpConfirmTitle">Poner la bomba en marcha</h2><p id="pumpConfirmDescription"></p><div id="pumpConfirmWarning" class="confirmation-warning" hidden>El modo continuo no tiene límite de tiempo y no se detiene al cerrar la página. La salida se corta después de 30 segundos sin comunicación con el servidor.</div><label id="pumpConfirmCheckLabel" class="confirmation-check" hidden><input id="pumpConfirmCheck" type="checkbox">Verifiqué la manguera y el recipiente. Estoy supervisando la dosificación.</label><p class="panel__note">La página esperará la confirmación del equipo para mostrar el cambio de estado.</p><div class="dialog-actions"><button class="button button--ghost" type="submit" value="cancel">Cancelar</button><button id="pumpConfirmAccept" class="button button--primary" type="submit" value="confirm">Confirmar encendido</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="./app/scripts/operations.js"></script>
   <script src="./app/scripts/charts.js"></script>
   <script src="./app/scripts/plant-vision.js"></script>
+  <script src="./app/scripts/plant-report.js"></script>
   <script src="./app/scripts/plant-trends.js"></script>
   <script src="./app/scripts/app.js"></script>
 </body>

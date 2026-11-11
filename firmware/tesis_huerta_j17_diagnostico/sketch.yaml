@@ -1,0 +1,13 @@
+profiles:
+  esp32s3:
+    fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,USBMode=hwcdc,UploadMode=default,FlashSize=16M
+    platforms:
+      - platform: esp32:esp32 (3.3.8)
+    libraries:
+      - DHT sensor library (1.4.7)
+      - Adafruit Unified Sensor (1.1.15)
+      - MH-Z19 (1.5.4)
+      - OneWire (2.3.8)
+      - DallasTemperature (4.0.6)
+default_fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,USBMode=hwcdc,UploadMode=default,FlashSize=16M
+default_port: COM13

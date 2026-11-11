@@ -1,127 +1,54 @@
 (function buildCharts(global) {
-  function drawLineChart(canvas, points, options) {
-    const context = canvas.getContext("2d");
-    const width = canvas.width;
-    const height = canvas.height;
-    const padding = 16;
-    context.clearRect(0, 0, width, height);
-
-    context.fillStyle = "#081412";
-    context.fillRect(0, 0, width, height);
-
-    context.strokeStyle = "rgba(255,255,255,0.08)";
-    context.lineWidth = 1;
-
-    for (let index = 0; index < 4; index += 1) {
-      const y = padding + ((height - padding * 2) / 3) * index;
-      context.beginPath();
-      context.moveTo(padding, y);
-      context.lineTo(width - padding, y);
-      context.stroke();
+  function drawLineChart(canvas, points, options = {}) {
+    const width = Math.max(260, canvas.clientWidth), height = Math.max(220, canvas.clientHeight);
+    const ratio = global.devicePixelRatio || 1;
+    canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
+    const ctx = canvas.getContext("2d"); ctx.scale(ratio, ratio);
+    ctx.clearRect(0, 0, width, height);
+    const pad = { left: width < 500 ? 48 : 62, right: 20, top: 22, bottom: 38 };
+    const plotWidth = width - pad.left - pad.right, plotHeight = height - pad.top - pad.bottom;
+    const invalid = new Set(["missing", "stale", "error", "unsupported", "uncalibrated"]);
+    const data = points.filter(p => Number.isFinite(Date.parse(p.timestamp))).sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    const valid = data.filter(p => Number.isFinite(p.value) && !invalid.has(p.status));
+    ctx.font = "11px 'IBM Plex Mono', monospace";
+    if (!valid.length) {
+      ctx.fillStyle = "#768078"; ctx.textAlign = "center";
+      ctx.fillText("Sin mediciones disponibles", width / 2, height / 2); return;
     }
-
-    if (!points.length) {
-      return;
+    const low = Math.min(...valid.map(p => p.value)), high = Math.max(...valid.map(p => p.value));
+    const margin = Math.max((high - low) * .15, Math.abs(high) * .025, .1);
+    const min = low - margin, max = high + margin;
+    const start = Date.parse(data[0].timestamp), end = Date.parse(data.at(-1).timestamp);
+    const x = p => pad.left + (end === start ? .5 : (Date.parse(p.timestamp) - start) / (end - start)) * plotWidth;
+    const y = p => pad.top + (max - p.value) / (max - min) * plotHeight;
+    const number = new Intl.NumberFormat("es-AR", { maximumFractionDigits: options.decimals ?? 1 });
+    for (let i = 0; i <= 4; i++) {
+      const py = pad.top + plotHeight * i / 4;
+      ctx.strokeStyle = "#e8ece7"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(pad.left, py); ctx.lineTo(width - pad.right, py); ctx.stroke();
+      ctx.fillStyle = "#768078"; ctx.textAlign = "right"; ctx.fillText(number.format(max - (max - min) * i / 4), pad.left - 10, py + 4);
     }
-
-    const values = points.map((entry) => entry.value);
-    const min = Math.min(...values, options.min);
-    const max = Math.max(...values, options.max);
-    const range = max - min || 1;
-
-    context.beginPath();
-    points.forEach((entry, index) => {
-      const x = padding + ((width - padding * 2) / (points.length - 1 || 1)) * index;
-      const normalized = (entry.value - min) / range;
-      const y = height - padding - normalized * (height - padding * 2);
-      if (index === 0) {
-        context.moveTo(x, y);
-      } else {
-        context.lineTo(x, y);
+    const clock = new Intl.DateTimeFormat("es-AR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const labelCount = width < 500 ? 2 : 4;
+    for (let i = 0; i <= labelCount; i++) {
+      ctx.textAlign = i === 0 ? "left" : i === labelCount ? "right" : "center";
+      ctx.fillText(clock.format(new Date(start + (end - start) * i / labelCount)), pad.left + plotWidth * i / labelCount, height - 12);
+    }
+    // Break the line at missing readings and long acquisition gaps.
+    const segments = []; let segment = [], previous = null;
+    for (const point of data) {
+      if (!Number.isFinite(point.value) || invalid.has(point.status)) {
+        if (segment.length) segments.push(segment); segment = []; previous = null; continue;
       }
-    });
-
-    context.strokeStyle = options.color;
-    context.lineWidth = 2.6;
-    context.stroke();
-
-    const last = points[points.length - 1];
-    const x = width - padding;
-    const normalized = (last.value - min) / range;
-    const y = height - padding - normalized * (height - padding * 2);
-
-    context.fillStyle = options.color;
-    context.beginPath();
-    context.arc(x, y, 4, 0, Math.PI * 2);
-    context.fill();
+      if (previous && Date.parse(point.timestamp) - Date.parse(previous.timestamp) > 15000) { segments.push(segment); segment = []; }
+      segment.push(point); previous = point;
+    }
+    if (segment.length) segments.push(segment);
+    for (const entries of segments) {
+      ctx.beginPath(); entries.forEach((p, i) => { if (i) ctx.lineTo(x(p), y(p)); else ctx.moveTo(x(p), y(p)); });
+      ctx.strokeStyle = options.color || "#4c805b"; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.stroke();
+      if (entries.length === 1) { ctx.beginPath(); ctx.arc(x(entries[0]), y(entries[0]), 3, 0, Math.PI * 2); ctx.fillStyle = options.color || "#4c805b"; ctx.fill(); }
+    }
+    const last = valid.at(-1); ctx.beginPath(); ctx.arc(x(last), y(last), 4, 0, Math.PI * 2); ctx.fillStyle = options.color || "#4c805b"; ctx.fill();
   }
-
-  function drawCamera(canvas, payload) {
-    const context = canvas.getContext("2d");
-    const width = canvas.width;
-    const height = canvas.height;
-    const time = payload.time / 1000;
-
-    context.fillStyle = "#07100f";
-    context.fillRect(0, 0, width, height);
-
-    const gradient = context.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, "#19332d");
-    gradient.addColorStop(1, "#081412");
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, width, height);
-
-    context.fillStyle = "rgba(255,255,255,0.05)";
-    for (let index = 0; index < 20; index += 1) {
-      context.fillRect(index * 40, 0, 1, height);
-      context.fillRect(0, index * 28, width, 1);
-    }
-
-    const trayY = height - 82;
-    context.fillStyle = "#243731";
-    context.fillRect(40, trayY, width - 80, 26);
-    context.fillRect(54, trayY - 18, width - 108, 24);
-
-    for (let index = 0; index < 8; index += 1) {
-      const x = 78 + index * 68;
-      const sway = Math.sin(time * 1.3 + index * 0.6) * 6;
-      const growth = 42 + Math.sin(time + index) * 8;
-
-      context.strokeStyle = "#9fe57b";
-      context.lineWidth = 3;
-      context.beginPath();
-      context.moveTo(x, trayY - 2);
-      context.quadraticCurveTo(x + sway, trayY - growth * 0.5, x + sway * 1.4, trayY - growth);
-      context.stroke();
-
-      context.fillStyle = "#8cd669";
-      context.beginPath();
-      context.ellipse(x + sway * 1.2, trayY - growth + 4, 12, 7, 0.5, 0, Math.PI * 2);
-      context.fill();
-
-      context.beginPath();
-      context.ellipse(x + sway * 0.6 - 10, trayY - growth * 0.72, 11, 6, -0.6, 0, Math.PI * 2);
-      context.fill();
-    }
-
-    const bubbleOffset = (time * 24) % 120;
-    context.fillStyle = "rgba(143, 224, 255, 0.7)";
-    for (let index = 0; index < 14; index += 1) {
-      context.beginPath();
-      context.arc(72 + index * 36, trayY + 10 - ((bubbleOffset + index * 18) % 110), 2 + (index % 3), 0, Math.PI * 2);
-      context.fill();
-    }
-
-    context.fillStyle = "rgba(255,255,255,0.08)";
-    context.fillRect(0, 0, width, height);
-
-    context.strokeStyle = "rgba(255,255,255,0.16)";
-    context.lineWidth = 1.5;
-    context.strokeRect(12, 12, width - 24, height - 24);
-  }
-
-  global.HydroVisionCharts = {
-    drawLineChart,
-    drawCamera
-  };
+  global.HydroVisionCharts = { drawLineChart };
 })(window);

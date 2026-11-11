@@ -1,10 +1,10 @@
 (function exposePlantVision(root, factory) {
-  const api = factory();
+  const api = factory(typeof module === "object" && module.exports ? require("./tablet-profile") : root.HydroVisionTabletProfile);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.HydroVisionPlant = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function createPlantVision() {
+})(typeof globalThis !== "undefined" ? globalThis : this, function createPlantVision(tabletProfile) {
   "use strict";
-  const VERSION = "leaf-pixel-v4.4";
+  const VERSION = "leaf-pixel-v4.7";
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const median = (values) => {
     if (!values.length) return 0;
@@ -97,6 +97,7 @@
         || roi.x < 0 || roi.y < 0 || roi.x + roi.width > 1 + 1e-9 || roi.y + roi.height > 1 + 1e-9) {
       throw new Error("Invalid leaf region");
     }
+    if (options.profile === "tablet-leaf-v1") return analyzeTablet(data, width, height, options);
     const inRegion = (x, y) => x >= roi.x * width && y >= roi.y * height
       && x < (roi.x + roi.width) * width && y < (roi.y + roi.height) * height;
     // Estimate the illuminant only from bright, near-neutral background samples.
@@ -302,8 +303,148 @@
     };
   }
 
+  function analyzeTablet(data, width, height, options) {
+    const n = width * height, blank = () => new Uint8Array(n), roi = options.roi || { x: 0, y: 0, width: 1, height: 1 };
+    const brightness = Float32Array.from({ length: n }, (_, i) =>
+      (data[i * 4] * 0.2126 + data[i * 4 + 1] * 0.7152 + data[i * 4 + 2] * 0.0722) / 255);
+    const signature = new Float32Array(32 * 24), cells = new Uint32Array(signature.length);
+    for (let i = 0; i < n; i += 3) {
+      const cell = Math.min(23, Math.floor(Math.floor(i / width) * 24 / height)) * 32 + Math.min(31, Math.floor(i % width * 32 / width));
+      signature[cell] += brightness[i]; cells[cell]++;
+    }
+    signature.forEach((v, i) => { signature[i] = v / Math.max(1, cells[i]); });
+    const result = { width, height, profile: "tablet-leaf-v1", mask: blank(), candidates: blank(), regions: [], signature,
+      yellowCandidates: blank(), yellowRegions: [], yellowLabels: new Int32Array(n), yellowOutsidePixels: 0,
+      leafPixels: 0, suspectPixels: 0, plantAreaPercent: 0, suspectSpotPercent: null, averageBrightness: 0,
+      centroid: null, boundingBox: null, roi: options.roi || null, patternCandidates: {},
+      quality: { usable: false, issues: ["tablet-reference-missing"], score: 0, sharpness: 0, detail: { value: null, samples: 0 } } };
+    if (!tabletProfile) return result;
+    const magenta = blank();
+    for (let i = 0; i < n; i++) {
+      const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+      magenta[i] = +(r > 70 && b > 70 && r > g * 1.4 && b > g * 1.4 && Math.abs(r - b) < 95);
+    }
+    const markers = components(magenta, width, height).items.filter(c => c.pixels > Math.max(15, n * 0.00002)
+      && Math.min(c.width, c.height) >= 4 && c.pixels / (c.width * c.height) > 0.5
+      && c.x > 1 && c.y > 1 && c.x + c.width < width - 1 && c.y + c.height < height - 1)
+      .sort((a, b) => b.pixels - a.pixels).slice(0, 8);
+    let pair, rank = 0;
+    for (let i = 0; i < markers.length; i++) for (let j = i + 1; j < markers.length; j++) {
+      const a = markers[i], b = markers[j], dx = b.x + b.width / 2 - a.x - a.width / 2, dy = b.y + b.height / 2 - a.y - a.height / 2;
+      const distance = Math.hypot(dx, dy), step = distance / (tabletProfile.PALETTE.length + 1);
+      const size = Math.sqrt((a.pixels + b.pixels) / 2);
+      if (distance > width * 0.18 && step > size * 0.7 && step < size * 1.9 && a.pixels / b.pixels < 2.2
+          && a.pixels + b.pixels > rank) { pair = [a, b]; rank = a.pixels + b.pixels; }
+    }
+    if (!pair) return result;
+    const center = c => ({ x: c.x + c.width / 2, y: c.y + c.height / 2 });
+    // The strip is ordered left-to-right (or top-to-bottom if the camera is rotated).
+    pair.sort((a, b) => Math.abs(a.x - b.x) > Math.abs(a.y - b.y) ? a.x - b.x : a.y - b.y);
+    const a = center(pair[0]), b = center(pair[1]), dx = b.x - a.x, dy = b.y - a.y, length2 = dx * dx + dy * dy;
+    const radius = Math.max(1, Math.floor(Math.min(...pair.map(c => Math.min(c.width, c.height))) * 0.16));
+    const sample = (x, y) => {
+      const colors = [[], [], []];
+      for (let yy = Math.round(y) - radius; yy <= Math.round(y) + radius; yy++) for (let xx = Math.round(x) - radius; xx <= Math.round(x) + radius; xx++) {
+        if (xx < 0 || xx >= width || yy < 0 || yy >= height) continue;
+        for (let c = 0; c < 3; c++) colors[c].push(data[(yy * width + xx) * 4 + c]);
+      }
+      return colors.map(values => median(values));
+    };
+    let references = tabletProfile.PALETTE.map((_, i) => sample(a.x + dx * (i + 1) / 10, a.y + dy * (i + 1) / 10));
+    const greenReference = color => color[1] > color[0] * 1.15 && color[1] > color[2] * 1.15;
+    if (!greenReference(references[0]) && greenReference(references[8])) references.reverse();
+    const distance = (u, v) => u.reduce((sum, value, c) => sum + (value - v[c]) ** 2, 0);
+    if (!greenReference(references[0]) || references[1][0] < references[1][2] * 1.4
+        || references.some((color, i) => references.slice(i + 1).some(other => distance(color, other) < 180))) {
+      result.quality.issues = ["tablet-reference-invalid"]; return result;
+    }
+    result.calibration = { profile: tabletProfile.VERSION, references };
+    const classes = new Int8Array(n).fill(-1), leafColors = blank();
+    const totals = references.map(color => Math.max(1, color[0] + color[1] + color[2]));
+    const normalized = references.map((color, i) => color.map(v => v / totals[i]));
+    const band = Math.max(...pair.map(c => Math.max(c.width, c.height))) * 0.85;
+    for (let i = 0; i < n; i++) {
+      const x = i % width, y = Math.floor(i / width), t = ((x - a.x) * dx + (y - a.y) * dy) / length2;
+      const perpendicular = Math.abs((x - a.x) * dy - (y - a.y) * dx) / Math.sqrt(length2);
+      if ((t > -0.08 && t < 1.08 && perpendicular < band) || x < roi.x * width || y < roi.y * height
+          || x >= (roi.x + roi.width) * width || y >= (roi.y + roi.height) * height) continue;
+      const color = [data[i * 4], data[i * 4 + 1], data[i * 4 + 2]];
+      const total = Math.max(1, color.reduce((sum, v) => sum + v, 0));
+      let closest = -1, best = 0.015;
+      normalized.forEach((reference, kind) => {
+        const refTotal = totals[kind];
+        // Screen brightness varies across the photographed panel; chromaticity is more stable.
+        const d = color.reduce((sum, v, c) => sum + (v / total - reference[c]) ** 2, 0)
+          + 0.025 * ((total - refTotal) / 765) ** 2;
+        if (d < best) { best = d; closest = kind; }
+      });
+      if (total < totals[8] * 0.8) {
+        const dark = [2, 7].map(kind => ({ kind, d: distance(color, references[kind]) })).sort((a, b) => a.d - b.d)[0];
+        if (dark.d < 2500) closest = dark.kind;
+      }
+      const rg = color[0] / Math.max(1, color[1]);
+      const yellowRG = references[1][0] / Math.max(1, references[1][1]);
+      const brownRG = references[2][0] / Math.max(1, references[2][1]);
+      const redRG = references[4][0] / Math.max(1, references[4][1]);
+      if (rg > yellowRG * 1.13 && rg < (brownRG + redRG) / 2 && color[2] < color[1] * 1.25) closest = 2;
+      classes[i] = closest; leafColors[i] = +(closest === 0 || closest === 1);
+    }
+    const joined = morphology(morphology(leafColors, width, height, 2, false), width, height, 2, true);
+    const groups = components(joined, width, height), leaf = groups.items.sort((a, b) => b.pixels - a.pixels)[0];
+    if (!leaf || leaf.pixels < n * 0.008) { result.quality.issues = ["insufficient-leaf"]; return result; }
+    const mask = blank();
+    for (let i = 0; i < n; i++) mask[i] = +(groups.labels[i] === leaf.id);
+    // Fill enclosed damage inside the blade, not the calibration strip or a petiole.
+    const outside = blank(), queue = new Int32Array(n); let head = 0, tail = 0;
+    const visit = i => { if (!mask[i] && !outside[i]) { outside[i] = 1; queue[tail++] = i; } };
+    for (let x = 0; x < width; x++) { visit(x); visit((height - 1) * width + x); }
+    for (let y = 0; y < height; y++) { visit(y * width); visit(y * width + width - 1); }
+    while (head < tail) {
+      const i = queue[head++], x = i % width;
+      if (x) visit(i - 1); if (x < width - 1) visit(i + 1);
+      if (i >= width) visit(i - width); if (i < n - width) visit(i + width);
+    }
+    for (let i = 0; i < n; i++) mask[i] = +!outside[i];
+    const inside = morphology(mask, width, height, 2, true), yellow = blank(), candidates = blank();
+    const patterns = Object.fromEntries(tabletProfile.PALETTE.slice(2, 8).map(item => [item.id, blank()]));
+    let pixels = 0, light = 0, sx = 0, sy = 0;
+    for (let i = 0; i < n; i++) {
+      if (!mask[i]) continue;
+      pixels++; light += brightness[i]; sx += i % width; sy += Math.floor(i / width);
+      if (inside[i] && classes[i] === 1) yellow[i] = 1;
+      if (inside[i] && classes[i] >= 2 && classes[i] <= 7) {
+        candidates[i] = 1; patterns[tabletProfile.PALETTE[classes[i]].id][i] = 1;
+      }
+    }
+    // Defocus blends a coloured core into a different palette at its rim.
+    // Attribute that narrow fringe to the adjacent core, not a second simulated pest.
+    const contexts = Object.fromEntries(["mites", "caterpillars", "miners"].map(key =>
+      [key, morphology(patterns[key], width, height, Math.max(2, Math.round(width / 250)), false)]));
+    for (const [core, fringe] of [["mites", "aphids"], ["mites", "miners"], ["mites", "whitefly"], ["caterpillars", "aphids"], ["miners", "whitefly"]]) {
+      const near = contexts[core];
+      for (let i = 0; i < n; i++) if (near[i] && patterns[fringe][i]) { patterns[core][i] = 1; patterns[fringe][i] = 0; }
+    }
+    const yellowGroups = components(yellow, width, height), keep = new Set();
+    const yellowRegions = yellowGroups.items.filter(c => c.pixels >= Math.max(15, n * 0.00004)).map(c => {
+      keep.add(c.id); return { ...c, x: c.x / width, y: c.y / height, width: c.width / width, height: c.height / height, evaluable: true };
+    });
+    for (let i = 0; i < n; i++) if (!keep.has(yellowGroups.labels[i])) yellow[i] = 0;
+    const issues = [], compactness = pixels / (leaf.width * leaf.height), aspect = Math.max(leaf.width, leaf.height) / Math.min(leaf.width, leaf.height);
+    if (compactness < 0.35 || compactness > 0.92 || aspect > 3.5 || pixels > n * 0.75) issues.push("tablet-leaf-shape");
+    if (leaf.x <= roi.x * width + 2 || leaf.y <= roi.y * height + 2 || leaf.x + leaf.width >= (roi.x + roi.width) * width - 2
+        || leaf.y + leaf.height >= (roi.y + roi.height) * height - 2) issues.push("tablet-leaf-clipped");
+    const average = light / Math.max(1, pixels) * 100, detail = measureDetail(brightness, mask, width, height);
+    if (average < 15) issues.push("underexposed"); if (average > 90) issues.push("overexposed");
+    return { ...result, mask, candidates, yellowCandidates: yellow, yellowLabels: yellowGroups.labels, yellowRegions,
+      patternCandidates: patterns, leafPixels: pixels, suspectPixels: candidates.reduce((sum, value) => sum + value, 0),
+      plantAreaPercent: pixels / n * 100, averageBrightness: average,
+      centroid: { x: sx / pixels / width, y: sy / pixels / height },
+      boundingBox: { x: leaf.x / width, y: leaf.y / height, width: leaf.width / width, height: leaf.height / height },
+      quality: { usable: !issues.length, issues, score: issues.length ? 20 : 85, sharpness: detail.value || 0, detail } };
+  }
+
   function compareFrames(a, b) {
-    if (!a.centroid || !b.centroid || a.width !== b.width || a.height !== b.height) return false;
+    if (!a.centroid || !b.centroid || a.width !== b.width || a.height !== b.height || a.profile !== b.profile) return false;
     // Compare the photographed scene, not mask centroid jitter caused by threshold crossings.
     const meanA = a.signature.reduce((sum, v) => sum + v, 0) / a.signature.length;
     const meanB = b.signature.reduce((sum, v) => sum + v, 0) / b.signature.length;
@@ -349,6 +490,7 @@
     const best = frames[selectedIndex];
     const comparable = frames.filter((f, i) => peers[selectedIndex][i]);
     const stable = frames.length >= 2 && comparable.length >= 2;
+    const screenDisagreement = best.profile === "tablet-leaf-v1" && comparable.length < frames.filter(frame => frame.quality.usable).length;
     const votes = expanded.filter((f, i) => peers[selectedIndex][i]);
     const required = Math.max(2, Math.ceil(comparable.length * 0.6));
     const overlay = new Uint8Array(best.mask.length);
@@ -373,7 +515,9 @@
         }
       }
       // Thin contour halos and tiny fragments remain uncertain even when the lighting repeats.
-      const broadPatch = region.pixels / (region.width * region.height) >= 0.42
+      const broadPatch = best.profile === "tablet-leaf-v1"
+        ? actualPixels >= Math.max(12, best.width * best.height * 0.00002)
+        : region.pixels / (region.width * region.height) >= 0.42
         && Math.min(region.width, region.height) >= Math.max(3, best.width * 0.012)
         && actualPixels >= Math.max(15, best.width * best.height * 0.00006);
       const atFrameEdge = region.x <= 1 || region.y <= 1
@@ -384,7 +528,7 @@
         || region.x + region.width >= (roi.x + roi.width) * best.width - 1
         || region.y + region.height >= (roi.y + roi.height) * best.height - 1);
       const sufficientSurface = interiorPixels / Math.max(1, actualPixels) >= 0.6 || actualPixels >= best.leafPixels * 0.004;
-      const repeated = stable && broadPatch && sufficientSurface && !atFrameEdge && !atSelectionEdge
+      const repeated = stable && !screenDisagreement && broadPatch && sufficientSurface && !atFrameEdge && !atSelectionEdge
         && supported / Math.max(1, actualPixels) >= 0.45;
       for (let y = region.y; y < region.y + region.height; y++) {
         for (let x = region.x; x < region.x + region.width; x++) {
@@ -397,7 +541,8 @@
       regions.push({ x: region.x / best.width, y: region.y / best.height, width: region.width / best.width,
         height: region.height / best.height, pixels: actualPixels, repeated });
     }
-    const usable = best.quality.usable && stable;
+    const quality = screenDisagreement ? { ...best.quality, usable: false, issues: [...best.quality.issues, "tablet-burst-disagreement"], score: 20 } : best.quality;
+    const usable = quality.usable && stable;
     const areas = comparable.map((frame) => frame.plantAreaPercent);
     const areaMeasurement = usable ? { min: Math.min(...areas), max: Math.max(...areas), samples: areas.length } : null;
     const yellowRepeated = new Uint8Array(best.mask.length);
@@ -434,7 +579,23 @@
         else yellowTentativePixels++;
       }
     }
-    return { ...best, overlay, regions, selectedIndex, stable, usable, repeatedPixels, tentativePixels,
+    const simulatedPatterns = [];
+    if (usable && best.profile === "tablet-leaf-v1") {
+      for (const item of tabletProfile.PALETTE.slice(2, 8)) {
+        const repeated = new Uint8Array(best.mask.length), own = best.patternCandidates[item.id];
+        const votes = frames.filter((_, i) => peers[selectedIndex][i]).map(frame =>
+          morphology(frame.patternCandidates[item.id], best.width, best.height, Math.max(1, Math.round(best.width / 500)), false));
+        for (let i = 0; i < own.length; i++) if (own[i]) {
+          let support = 0; for (const vote of votes) support += vote[i];
+          repeated[i] = +(support >= required);
+        }
+        const groups = components(repeated, best.width, best.height).items.filter(c => c.pixels >= Math.max(12, best.width * best.height * 0.00002));
+        const pixels = groups.reduce((sum, c) => sum + c.pixels, 0);
+        if (pixels) simulatedPatterns.push({ id: item.id, label: item.label, count: groups.length, pixels,
+          percent: pixels / Math.max(1, best.leafPixels) * 100 });
+      }
+    }
+    return { ...best, quality, overlay, regions, selectedIndex, stable, usable, repeatedPixels, tentativePixels, simulatedPatterns,
       areaMeasurement, yellowRegions, yellowPixels, yellowTentativePixels, colorAreaPixels,
       yellowPercent: usable ? yellowPixels / Math.max(1, colorAreaPixels) * 100 : null,
       suspectSpotPercent: usable ? repeatedPixels / Math.max(1, best.leafPixels) * 100 : null,

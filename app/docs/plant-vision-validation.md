@@ -1,5 +1,104 @@
 # Validacion de manchas foliares
 
+## Perfil cerrado tablet-leaf-v1: 2026-11-03
+
+Se reemplazo el ensayo sincronizado por una tarea visual controlada: la misma
+silueta, sin peciolo estrecho, amarillo en parches espaciales y seis firmas
+ampliadas. Las firmas son artificiales (incluido el tinte violeta del plateado),
+no insectos reconocidos por especie. El Site publicado original no se cambia.
+
+El analizador `leaf-pixel-v4.7/tablet-leaf-v1` requiere dos extremos magenta
+y nueve referencias constantes fotografiadas en la tira inferior. Calibra
+colores de cada foto, excluye la tira, limita el analisis a la lamina y exige
+repeticion de firmas en la rafaga. No consulta los controles del simulador.
+La cromaticidad tolera variacion de brillo en la pantalla; los bordes borrosos
+proximos a un nucleo coloreado no se presentan como otra plaga simulada.
+Sin referencias, encuadre completo o consistencia de la rafaga no hay medida
+valida. El algoritmo general de plantas no es una alternativa automatica.
+
+Resultados con fotos de la tablet fisica, fondo gris, escala 0.85, giro 90,
+QXGA y sin flash:
+
+| Caso | Amarillo solicitado | Amarillo fotografiado | Firmas repetidas |
+| --- | --- | --- | --- |
+| Hoja sana, rafaga `plant-mw1abpq1` | 0 | 0% | Ninguna; manchas 0% |
+| Amarillo completo, `plant-mw1adayy` | 100 | 97.8% | Ninguna; manchas 0% |
+| Mixto, `plant-mw1afj6a` | 35 | 34.6% | Las seis firmas ampliadas |
+
+La rafaga mixta se uso para ajustar la separacion de colores: estos resultados
+no son una evaluacion ciega ni una medida de exactitud en otros escenarios.
+Se reevaluo en el navegador con v4.7 y se guardo esa version en HydroVision.
+Las dos referencias independientes se reprodujeron con v4.7 desde sus tres
+JPEG, decodificados y reducidos a 1024x768 con System.Drawing. Esa comprobacion
+no es otra captura ni una validacion en otra iluminacion, tablet o cultivo.
+Al final la tablet dejo de confirmar; la ultima reevaluacion uso la rafaga
+guardada, conservando su fecha de captura, no una imagen nueva.
+
+Pruebas automaticas: 92 definidas, 79 aprobadas, ninguna fallida y 13 omitidas
+por falta del corpus fotografico historico opcional. Se incluyen las seis
+firmas aisladas con bordes mezclados, amarillo total, referencia ausente,
+objeto rectangular, cambio de posicion, distinta exposicion/brillo y firmas
+que aparecen en una sola foto. Esto valida logica, no eficacia biologica.
+
+## Historico: ensayos anteriores con tablet (v4.4)
+
+Se fotografio la tablet fisica confirmada por el servidor (no la ventana de
+prueba en la PC), con fondo gris, escala 0.85, giro 90 grados y rafagas de tres
+JPEG QXGA sin flash. La clasificacion visual usa los pixeles y la repeticion;
+los parametros solicitados al simulador solo se conservan como contexto.
+El clasificador comun `app/scripts/plant-report.js` se usa tanto en HydroVision
+como en el panel. Las conclusiones no identifican especies de plaga.
+
+Resultados observados, no medidas de exactitud ni calibracion biologica:
+
+| Caso | Ajustes simulados | Conclusion de las fotos | Amarillo medido | Manchas repetidas |
+| --- | --- | --- | --- | --- |
+| 4 | Referencia sana | Referencia evaluable | 0% | 0% |
+| 5 | Amarillo 40, sin plagas | Una zona amarillenta repetida | 1.14% | 0% |
+| 6 | Amarillo 60, sin plagas | Sin lectura: segmentacion foliar insuficiente | No evaluable | No evaluable |
+| 7 | Minadores 70 | Marcas por revisar | 0% | 0% |
+| 8 | Orugas 60 | Marcas por revisar | 0% | 0% |
+| 9 | Pulgones 70 | Manchas posibles | 0% | 0.10% |
+| 10 | Amarillo 35 y seis plagas a 45 | Manchas y amarillamiento | 0.91% | 0.28% |
+
+Los numeros del simulador ajustan apariencia e intensidad; no representan el
+porcentaje fisico de superficie afectada. Por ello no se espera igualdad con
+los porcentajes medidos. El caso 6 demuestra una limitacion real del algoritmo
+cuando desaparece mucho verde, no una hoja sana. En los casos 7 y 8 hubo
+marcas candidatas, pero no repetidas cuantificables: esto no identifica ni
+descarta insectos, galerias o perforaciones. No se modificaron los umbrales
+para conseguir aciertos en estas pruebas.
+
+La superposicion del caso mixto localiza buena parte de la senal amarillenta
+cerca del peciolo; no demuestra una medicion de clorosis de toda la lamina.
+El detector actual no garantiza excluir toda pigmentacion natural del tallo.
+La region marcada y la foto original deben revisarse, no solo el numero.
+
+La tabla de ensayos recientes conserva esos limites en la interfaz y muestra
+los valores no evaluables como tales. Fotos y metadatos quedan en el corpus
+privado `data/plant-captures/case-<burst>.json`. Las pruebas fotograficas de
+septiembre siguen omitidas en esta PC por faltar su corpus y la dependencia
+opcional de lectura; no se presentan como verificadas por estos ensayos.
+
+## Pruebas con una pantalla de tablet
+
+Configurar `CAMERA_CAPTURE_TARGET=screen` en `.env.camera.local` y reiniciar el
+servidor. Este modo fuerza el flash de analisis a cero y usa contraste neutro
+por defecto. No cambia los umbrales del algoritmo para favorecer la simulacion.
+Las fotos conservan QXGA y la rafaga de tres cuadros.
+
+Las capturas llevan `captureTarget: screen` y un protocolo de luz propio.
+El dashboard muestra solo el historial del modo activo, con un limite de 40
+analisis por modo; las entradas antiguas sin etiqueta se consideran hojas reales.
+Las comparaciones temporales nunca mezclan pantalla y planta. Para volver al
+cultivo, quitar `CAMERA_CAPTURE_TARGET=screen` y reiniciar; el historial se conserva.
+
+Mantener la hoja completa dentro del encuadre, camara y tablet fijas y brillo
+estable. El foco es fisico: aumentar resolucion no corrige desenfoque. La
+simulacion comprueba respuestas visuales a colores y marcas, no identifica
+plagas ni valida exactitud sobre hojas reales. Una hoja completamente amarilla
+o marron puede quedar fuera de la segmentacion que depende de verde reconocible.
+
 Fecha: 2026-09-04. Version del analisis: `leaf-pixel-v4.1`.
 
 ## Nitidez y fallos intermitentes: 2026-09-07, v4.4

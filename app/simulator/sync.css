@@ -1,0 +1,13 @@
+.sync-banner{position:fixed;z-index:10000;inset:0;background:#eef0e8;display:grid;place-content:center;gap:20px;padding:32px;text-align:center;color:#243b2d;font:18px Georgia,serif}
+.sync-banner[hidden]{display:none}.sync-banner h1{font:40px Georgia,serif;margin:0}.sync-banner p{max-width:540px;line-height:1.5}
+.sync-banner button{padding:18px 30px;background:#294c37;color:white;border-radius:8px;font:17px Georgia,serif}
+.sync-display .stage[data-background=gray]{background:#606060!important}
+.sync-display .stage[data-background=dark]{background:#151515!important}
+.sync-display .stage[data-background=light]{background:#deded8!important}
+.sync-display .stage .capture-toolbar,.sync-display .stage .capture-hint,.sync-display .stage:after{display:none!important}
+.sync-display .stage .canvas-wrap{pointer-events:none}.sync-display .stage{touch-action:none}
+.sync-chart{display:none;position:absolute;inset:12%;background:#a7a7a7;padding:5%;z-index:10;grid-template-rows:1fr 1fr 1fr;gap:5%}
+.sync-chart-active .sync-chart{display:grid}.sync-chart-active .canvas-wrap{visibility:hidden}
+.sync-chart .stripes{background:repeating-linear-gradient(90deg,#101010 0 3px,#eee 3px 6px)}
+.sync-chart .checker{background:repeating-conic-gradient(#111 0 25%,#eee 0 50%) 0/24px 24px}
+.sync-chart .patches{display:flex}.sync-chart .patches i{flex:1;background:var(--patch)}

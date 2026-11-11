@@ -1,14 +1,27 @@
-﻿const http = require("http");
+const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 const { collectCameraBurst, withRestoredSettings } = require("./app/camera-burst");
+const { retainHistory, historyForTarget } = require("./app/vision-history");
+const { createSimulatorSync } = require("./app/simulator-sync");
+const { createSimulatorAPI } = require("./app/simulator-api");
+const { USB_SENSORS, unavailable, normalizeLiveEntry, visibleSnapshot } = require("./app/live-readings");
+const { createRelayControl, createControlAccess, sameOrigin } = require("./app/relay-control");
+const { validateCalibration, projectLevelState } = require("./app/water-level-calibration");
 
 const PORT = process.env.PORT || 4173;
 const APP_DIR = __dirname;
-const DATA_DIR = path.join(APP_DIR, "data");
+const DATA_DIR = process.env.HYDROVISION_DATA_DIR ? path.resolve(process.env.HYDROVISION_DATA_DIR) : path.join(APP_DIR, "data");
 const RUNTIME_FILE = path.join(DATA_DIR, "runtime-state.json");
+let levelCalibration = null;
+try {
+  levelCalibration = validateCalibration(JSON.parse(fs.readFileSync(path.join(DATA_DIR, "water-level-calibration.json"), "utf8")));
+  if (!levelCalibration) console.warn("Nivel resistivo: referencias incompletas o no validas; no se aplica una conversion.");
+} catch (error) {
+  if (error.code !== "ENOENT") console.warn("Nivel resistivo: no se pudo leer la calibracion; se mantienen datos sin calibrar.");
+}
 const PLANT_CAPTURE_DIR = path.join(DATA_DIR, "plant-captures");
 const PLANT_CAPTURE_ROUTE = "/api/plant-vision/images/";
 const PLANT_VISION_HISTORY_SIZE = 40;
@@ -17,11 +30,17 @@ const TICK_INTERVAL_MS = 2000;
 const HISTORY_SIZE = 40;
 const LIVE_STALE_MS = 15000;
 const DEFAULT_LIVE_SOURCE = "esp32-direct";
+const LIVE_MODE = process.env.DATA_MODE === "esp32-usb" ? "esp32-usb" : "esp32-wifi";
 const INGEST_TOKEN = process.env.INGEST_TOKEN || "";
+const controlAccess = createControlAccess({ token: process.env.RELAY_CONTROL_TOKEN || "" });
+const relayControl = createRelayControl({ deviceId: process.env.ESP32_DEVICE_ID || "huerta-j17",
+  enabled: INGEST_TOKEN.length >= 16 && controlAccess.configured });
 const CAMERA_STREAM_PROXY_PATH = "/api/camera/stream";
 const CAMERA_CAPTURE_PROXY_PATH = "/api/camera/capture";
 const CAMERA_CAPTURE_REFRESH_MS = parseEnvInt("CAMERA_CAPTURE_REFRESH_MS", 3600000);
-const CAMERA_ANALYSIS_FLASH_INTENSITY = clamp(parseEnvInt("CAMERA_ANALYSIS_FLASH_INTENSITY", 24), 0, 255);
+const CAMERA_CAPTURE_TARGET = process.env.CAMERA_CAPTURE_TARGET === "screen" ? "screen" : "plant";
+const CAMERA_IS_SCREEN = CAMERA_CAPTURE_TARGET === "screen";
+const CAMERA_ANALYSIS_FLASH_INTENSITY = CAMERA_IS_SCREEN ? 0 : clamp(parseEnvInt("CAMERA_ANALYSIS_FLASH_INTENSITY", 24), 0, 255);
 const CAMERA_ANALYSIS_JPEG_QUALITY = clamp(parseEnvInt("CAMERA_ANALYSIS_JPEG_QUALITY", 8), 8, 63);
 const CAMERA_ANALYSIS_FLASH_SETTLE_MS = parseEnvInt("CAMERA_ANALYSIS_FLASH_SETTLE_MS", 250);
 const CAMERA_STILL_PROFILE = {
@@ -30,9 +49,11 @@ const CAMERA_STILL_PROFILE = {
   label: process.env.CAMERA_STILL_LABEL || "QXGA 2048x1536 HQ",
   settings: {
     brightness: parseEnvInt("CAMERA_STILL_BRIGHTNESS", 0),
-    contrast: parseEnvInt("CAMERA_STILL_CONTRAST", 1),
+    contrast: parseEnvInt("CAMERA_STILL_CONTRAST", CAMERA_IS_SCREEN ? 0 : 1),
     saturation: parseEnvInt("CAMERA_STILL_SATURATION", 0),
-    ae_level: parseEnvInt("CAMERA_STILL_AE_LEVEL", -1)
+    ae_level: parseEnvInt("CAMERA_STILL_AE_LEVEL", -1),
+    ...(process.env.CAMERA_STILL_SHARPNESS !== undefined ? { sharpness: clamp(parseEnvInt("CAMERA_STILL_SHARPNESS", 1), -3, 3) } : {}),
+    ...(process.env.CAMERA_STILL_DENOISE !== undefined ? { denoise: clamp(parseEnvInt("CAMERA_STILL_DENOISE", 1), 0, 8) } : {})
   }
 };
 const CAMERA_VIDEO_PROFILE = {
@@ -41,26 +62,41 @@ const CAMERA_VIDEO_PROFILE = {
   label: process.env.CAMERA_VIDEO_LABEL || "UXGA 1600x1200",
   settings: {
     brightness: parseEnvInt("CAMERA_VIDEO_BRIGHTNESS", 0),
-    contrast: parseEnvInt("CAMERA_VIDEO_CONTRAST", 1),
+    contrast: parseEnvInt("CAMERA_VIDEO_CONTRAST", CAMERA_IS_SCREEN ? 0 : 1),
     saturation: parseEnvInt("CAMERA_VIDEO_SATURATION", 0),
-    ae_level: parseEnvInt("CAMERA_VIDEO_AE_LEVEL", -1)
+    ae_level: parseEnvInt("CAMERA_VIDEO_AE_LEVEL", -1),
+    ...(process.env.CAMERA_VIDEO_SHARPNESS !== undefined ? { sharpness: clamp(parseEnvInt("CAMERA_VIDEO_SHARPNESS", 1), -3, 3) } : {}),
+    ...(process.env.CAMERA_VIDEO_DENOISE !== undefined ? { denoise: clamp(parseEnvInt("CAMERA_VIDEO_DENOISE", 1), 0, 8) } : {})
   }
 };
 const CAMERA_CONFIG = readCameraConfig();
+const SIMULATOR_FILE = path.join(DATA_DIR, "simulator-state.json");
+let savedSimulator;
+try { savedSimulator = JSON.parse(fs.readFileSync(SIMULATOR_FILE, "utf8")); } catch { /* A new local lab starts with a healthy reference. */ }
+const simulator = createSimulatorSync({ initial: savedSimulator, persist: config => {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(`${SIMULATOR_FILE}.tmp`, JSON.stringify(config, null, 2));
+  fs.renameSync(`${SIMULATOR_FILE}.tmp`, SIMULATOR_FILE);
+} });
+const handleSimulator = createSimulatorAPI(simulator, { port: PORT, history: () => historyForTarget(state.plantVision, "screen"), capture: async () => {
+  if (!CAMERA_IS_SCREEN) throw Object.assign(new Error("Activar CAMERA_CAPTURE_TARGET=screen para el laboratorio"), { statusCode: 409 });
+  return capturePlantImage();
+} });
 let currentCameraProfileKey = "";
 let cameraOperations = Promise.resolve();
 let cameraAnalysisPending = false;
 const activeCameraResponses = new Set();
 
 const sensors = [
-  { id: "air-humidity", label: "Humedad ambiente", unit: "%", decimals: 1, min: 45, max: 85, idealMin: 55, idealMax: 75, base: 67, step: 1.7, color: "#85d3a8", channel: "huerta/sensores/ambiente/humedad" },
-  { id: "air-temperature", label: "Temperatura ambiente", unit: "°C", decimals: 1, min: 15, max: 35, idealMin: 20, idealMax: 28, base: 24.5, step: 0.7, color: "#f6c96b", channel: "huerta/sensores/ambiente/temperatura" },
-  { id: "water-level", label: "Nivel de agua", unit: "%", decimals: 0, min: 20, max: 100, idealMin: 55, idealMax: 95, base: 74, step: 3, color: "#8fe0ff", channel: "huerta/sensores/agua/nivel" },
-  { id: "air-co2", label: "CO2 ambiente", unit: "ppm", decimals: 0, min: 350, max: 1800, idealMin: 500, idealMax: 1200, base: 780, step: 55, color: "#ffb86b", channel: "huerta/sensores/ambiente/co2" },
-  { id: "water-temperature", label: "Temperatura del agua", unit: "°C", decimals: 1, min: 14, max: 32, idealMin: 18, idealMax: 24, base: 21.1, step: 0.6, color: "#7cc9ff", channel: "huerta/sensores/agua/temperatura" },
-  { id: "water-ph", label: "pH del agua", unit: "pH", decimals: 2, min: 4.5, max: 8, idealMin: 5.8, idealMax: 6.5, base: 6.18, step: 0.09, color: "#d0ff85", channel: "huerta/sensores/agua/ph" },
-  { id: "light-intensity", label: "Intensidad lumínica", unit: "lux", decimals: 0, min: 0, max: 35000, idealMin: 18000, idealMax: 28000, base: 22600, step: 1300, color: "#ffe08a", channel: "huerta/sensores/luz/intensidad" },
-  { id: "water-ec", label: "Conductividad eléctrica", unit: "mS/cm", decimals: 2, min: 0.4, max: 3.5, idealMin: 1.2, idealMax: 2.4, base: 1.82, step: 0.08, color: "#9fddff", channel: "huerta/sensores/agua/ec" }
+  { id: "air-humidity", label: "Humedad ambiente", unit: "%", decimals: 1, min: 45, max: 85, idealMin: 55, idealMax: 75, color: "#85d3a8", channel: "huerta/sensores/ambiente/humedad" },
+  { id: "air-temperature", label: "Temperatura ambiente", unit: "°C", decimals: 1, min: 15, max: 35, idealMin: 20, idealMax: 28, color: "#f6c96b", channel: "huerta/sensores/ambiente/temperatura" },
+  { id: "water-level", label: "Nivel de agua", unit: "%", decimals: 0, min: 20, max: 100, idealMin: 55, idealMax: 95, color: "#8fe0ff", channel: "huerta/sensores/agua/nivel" },
+  { id: "air-co2", label: "CO2 ambiente", unit: "ppm", decimals: 0, min: 350, max: 1800, idealMin: 500, idealMax: 1200, color: "#ffb86b", channel: "huerta/sensores/ambiente/co2" },
+  { id: "water-temperature", label: "Temperatura del agua", unit: "°C", decimals: 1, min: 14, max: 32, idealMin: 18, idealMax: 24, color: "#7cc9ff", channel: "huerta/sensores/agua/temperatura" },
+  { id: "water-ph", label: "pH del agua", unit: "pH", decimals: 2, min: 4.5, max: 8, idealMin: 5.8, idealMax: 6.5, color: "#d0ff85", channel: "huerta/sensores/agua/ph" },
+  { id: "light-intensity", label: "Intensidad lumínica", unit: "lux", decimals: 0, min: 0, max: 35000, idealMin: 18000, idealMax: 28000, color: "#ffe08a", channel: "huerta/sensores/luz/intensidad" },
+  { id: "water-ec", label: "Conductividad eléctrica", unit: "mS/cm", decimals: 3, min: 0.4, max: 3.5, idealMin: 1.2, idealMax: 2.4, color: "#9fddff", channel: "huerta/sensores/agua/ec" },
+  ...USB_SENSORS
 ];
 
 const sensorById = new Map(sensors.map((sensor) => [sensor.id, sensor]));
@@ -206,6 +242,7 @@ function readCameraConfig() {
   if ((requestedMode === "mjpeg" && mjpegUrl) || (!requestedMode && mjpegUrl)) {
     return {
       mode: "mjpeg",
+      captureTarget: CAMERA_CAPTURE_TARGET,
       badge: "Imagen HD",
       label,
       streamUrl: CAMERA_STREAM_PROXY_PATH,
@@ -217,15 +254,15 @@ function readCameraConfig() {
       upstreamCaptureUrl: captureUrl,
       upstreamControlUrl: controlUrl,
       upstreamStatusUrl: statusUrl,
-      note: `Modo imagen: ${CAMERA_STILL_PROFILE.label} cada ${formatDuration(CAMERA_CAPTURE_REFRESH_MS)}. Modo video: ${CAMERA_VIDEO_PROFILE.label} desde ${formatCameraHost(mjpegUrl)}.`
+      note: `${CAMERA_IS_SCREEN ? "Prueba con pantalla de tablet, sin flash. No es un diagnostico del cultivo. " : ""}Modo imagen: ${CAMERA_STILL_PROFILE.label} cada ${formatDuration(CAMERA_CAPTURE_REFRESH_MS)}. Modo video: ${CAMERA_VIDEO_PROFILE.label} desde ${formatCameraHost(mjpegUrl)}.`
     };
   }
 
   return {
-    mode: "mock",
-    badge: "Mock stream",
+    mode: "unavailable",
+    badge: "No disponible",
     label: "ESP32-CAM OV3660",
-    note: "Esta vista usa una simulación visual. Configurá CAMERA_MJPEG_URL o CAMERA_EMBED_URL para conectar la ESP32-CAM."
+    note: "Conectá la cámara para ver imágenes del cultivo."
   };
 }
 
@@ -275,6 +312,7 @@ function normalizeDate(value, fallback = new Date()) {
 }
 
 function toStatus(sensor, value) {
+  if (sensor.telemetry) return "info";
   if (value < sensor.idealMin || value > sensor.idealMax) {
     const criticalLow = sensor.idealMin - (sensor.idealMin - sensor.min) * 0.45;
     const criticalHigh = sensor.idealMax + (sensor.max - sensor.idealMax) * 0.45;
@@ -284,58 +322,15 @@ function toStatus(sensor, value) {
   return "ok";
 }
 
-function formatReading(sensor, value, date, source = "mock-backend") {
-  return {
-    sensorId: sensor.id,
-    label: sensor.label,
-    value: Number(value.toFixed(sensor.decimals)),
-    unit: sensor.unit,
-    status: toStatus(sensor, value),
-    timestamp: date.toISOString(),
-    source,
-    channel: sensor.channel
-  };
-}
-
 function seedState() {
-  const now = Date.now();
-  const history = {};
-  const snapshot = {};
-
-  sensors.forEach((sensor) => {
-    const entries = [];
-    let current = sensor.base;
-
-    for (let index = HISTORY_SIZE; index > 0; index -= 1) {
-      current += (Math.random() - 0.5) * sensor.step * 1.3 + (sensor.base - current) * 0.08;
-      current = clamp(current, sensor.min, sensor.max);
-      const reading = formatReading(sensor, current, new Date(now - index * TICK_INTERVAL_MS));
-      entries.push(reading);
-    }
-
-    history[sensor.id] = entries;
-    snapshot[sensor.id] = entries[entries.length - 1];
-  });
-
+  const now = new Date();
   return {
     sensors,
-    snapshot,
-    history,
-    alarms: [],
-    actuators: [],
-    services: [],
-    meta: {
-      updatedAt: new Date().toISOString(),
-      running: true,
-      dataMode: "mock-backend",
-      lastIngestAt: null
-    },
-    manualOverrides: {},
-    remoteActuators: [],
-    plantVision: {
-      latest: null,
-      history: []
-    }
+    snapshot: Object.fromEntries(sensors.map(sensor => [sensor.id, unavailable(sensor, LIVE_MODE, now, "missing", "Esperando una lectura de la ESP32")])),
+    history: Object.fromEntries(sensors.map(sensor => [sensor.id, []])),
+    alarms: [], actuators: [], services: [], remoteActuators: [],
+    meta: { updatedAt: now.toISOString(), running: false, dataMode: LIVE_MODE, lastIngestAt: null },
+    plantVision: { latest: null, history: [] }
   };
 }
 
@@ -362,25 +357,27 @@ function normalizeActuator(actuator, index) {
 }
 
 function normalizeState(input) {
-  const seeded = seedState();
   const source = input && typeof input === "object" ? input : {};
   const snapshot = {};
   const history = {};
+  const effectiveMode = LIVE_MODE;
+  const sameMode = effectiveMode === source.meta?.dataMode;
 
   sensors.forEach((sensor) => {
-    const seededHistory = seeded.history[sensor.id];
     const sourceHistory = Array.isArray(source.history?.[sensor.id]) ? source.history[sensor.id] : [];
     const mergedHistory = sourceHistory
-      .filter((entry) => entry && typeof entry.value === "number" && entry.timestamp)
+      .filter((entry) => entry && (Number.isFinite(entry.value) || entry.value === null) && entry.timestamp
+        && entry.source === effectiveMode)
       .slice(-HISTORY_SIZE)
-      .map((entry) => formatReading(sensor, entry.value, normalizeDate(entry.timestamp), entry.source || "mock-backend"));
+      .map((entry) => normalizeLiveEntry(sensor, entry, entry.source || effectiveMode, normalizeDate(entry.timestamp), toStatus)).filter(Boolean);
 
-    history[sensor.id] = mergedHistory.length ? mergedHistory : seededHistory;
+    history[sensor.id] = mergedHistory;
 
     const sourceSnapshot = source.snapshot?.[sensor.id];
-    snapshot[sensor.id] = sourceSnapshot && typeof sourceSnapshot.value === "number" && sourceSnapshot.timestamp
-      ? formatReading(sensor, sourceSnapshot.value, normalizeDate(sourceSnapshot.timestamp), sourceSnapshot.source || "mock-backend")
-      : history[sensor.id][history[sensor.id].length - 1];
+    snapshot[sensor.id] = sourceSnapshot && (Number.isFinite(sourceSnapshot.value) || sourceSnapshot.value === null) && sourceSnapshot.timestamp
+        && sourceSnapshot.source === effectiveMode
+      ? normalizeLiveEntry(sensor, sourceSnapshot, sourceSnapshot.source || effectiveMode, normalizeDate(sourceSnapshot.timestamp), toStatus)
+      : history[sensor.id][history[sensor.id].length - 1] || unavailable(sensor, effectiveMode, new Date());
   });
 
   return {
@@ -399,12 +396,14 @@ function normalizeState(input) {
     services: [],
     meta: {
       updatedAt: typeof source.meta?.updatedAt === "string" ? source.meta.updatedAt : new Date().toISOString(),
-      running: typeof source.meta?.running === "boolean" ? source.meta.running : true,
-      dataMode: typeof source.meta?.dataMode === "string" ? source.meta.dataMode : "mock-backend",
-      lastIngestAt: typeof source.meta?.lastIngestAt === "string" ? source.meta.lastIngestAt : null
+      running: false,
+      dataMode: effectiveMode,
+      transport: sameMode ? source.meta?.transport : undefined,
+      firmwareProfile: sameMode ? source.meta?.firmwareProfile : undefined,
+      firmwareBuild: sameMode ? source.meta?.firmwareBuild : undefined,
+      lastIngestAt: sameMode && typeof source.meta?.lastIngestAt === "string" ? source.meta.lastIngestAt : null
     },
-    manualOverrides: source.manualOverrides && typeof source.manualOverrides === "object" ? source.manualOverrides : {},
-    remoteActuators: Array.isArray(source.remoteActuators)
+    remoteActuators: sameMode && Array.isArray(source.remoteActuators)
       ? source.remoteActuators.map(normalizeActuator).filter(Boolean)
       : [],
     plantVision: normalizePlantVision(source.plantVision)
@@ -414,9 +413,8 @@ function normalizeState(input) {
 function normalizePlantVision(input) {
   const source = input && typeof input === "object" ? input : {};
   const history = Array.isArray(source.history)
-    ? source.history
-        .filter((entry) => entry && typeof entry === "object" && typeof entry.timestamp === "string")
-        .slice(-PLANT_VISION_HISTORY_SIZE)
+    ? retainHistory(source.history
+        .filter((entry) => entry && typeof entry === "object" && typeof entry.timestamp === "string"), PLANT_VISION_HISTORY_SIZE)
     : [];
 
   return {
@@ -443,18 +441,13 @@ function loadState() {
 }
 
 let state = loadState();
-let tickCount = 0;
-
-function isMockMode() {
-  return state.meta.dataMode === "mock-backend";
-}
 
 function persistState() {
   fs.writeFileSync(RUNTIME_FILE, JSON.stringify(state, null, 2));
 }
 
 function createAlarm(sensor, reading) {
-  if (reading.status === "ok") {
+  if (!Number.isFinite(reading.value) || !["warning", "critical"].includes(reading.status)) {
     return null;
   }
 
@@ -498,126 +491,28 @@ function getLiveAgeMs() {
 }
 
 function buildActuators() {
-  if (!isMockMode() && state.remoteActuators.length) {
-    state.actuators = state.remoteActuators.map((actuator) => {
-      const override = state.manualOverrides[actuator.id];
-      if (override) {
-        return {
-          ...actuator,
-          active: override.active,
-          mode: "manual"
-        };
-      }
+  state.actuators = state.remoteActuators.map(actuator => ({ ...actuator }));
+}
 
-      return actuator;
-    });
-    return;
-  }
+function buildAlarms() {
+  const { snapshot } = currentLevelState();
+  state.alarms = sensors.map(sensor => createAlarm(sensor, snapshot[sensor.id])).filter(Boolean);
+}
 
-  const waterLevel = state.snapshot["water-level"];
-  const ph = state.snapshot["water-ph"];
-  const ec = state.snapshot["water-ec"];
-  const light = state.snapshot["light-intensity"];
-  const nowHour = new Date(state.meta.updatedAt).getHours();
-
-  const derived = [
-    {
-      id: "pump",
-      label: "Bomba de recirculación",
-      active: waterLevel.value > 42,
-      detail: waterLevel.value > 42 ? "Caudal estable" : "Protección por nivel bajo"
-    },
-    {
-      id: "dosing",
-      label: "Dosificador de nutrientes",
-      active: ph.status !== "ok" || ec.status !== "ok",
-      detail: ph.status !== "ok" || ec.status !== "ok" ? "Ajuste en revisión" : "Stand-by"
-    },
-    {
-      id: "aeration",
-      label: "Aireación del tanque",
-      active: true,
-      detail: "Oxigenación continua"
-    },
-    {
-      id: "grow-lights",
-      label: "Luces de cultivo",
-      active: nowHour >= 7 && nowHour <= 21 && light.value < 26000,
-      detail: nowHour >= 7 && nowHour <= 21 ? "Compensación fotoperiodo" : "Fuera de ventana lumínica"
-    }
-  ];
-
-  state.actuators = derived.map((actuator) => {
-    const override = state.manualOverrides[actuator.id];
-    if (override) {
-      return {
-        ...actuator,
-        active: override.active,
-        mode: "manual"
-      };
-    }
-
-    return {
-      ...actuator,
-      mode: isMockMode() ? "auto" : "derived"
-    };
-  });
+function currentLevelState() {
+  return projectLevelState(visibleSnapshot(sensors, state.snapshot, state.meta.dataMode), state.history, state.meta, levelCalibration);
 }
 
 function buildServices() {
-  const criticalCount = Object.values(state.snapshot).filter((entry) => entry.status === "critical").length;
-  const liveAgeMs = getLiveAgeMs();
-  const liveConnected = !isMockMode() && liveAgeMs <= LIVE_STALE_MS;
-  const cameraHost = CAMERA_CONFIG.upstreamStreamUrl || CAMERA_CONFIG.streamUrl || CAMERA_CONFIG.embedUrl;
-  const cameraService = CAMERA_CONFIG.mode === "mock"
-    ? {
-        id: "camera",
-        label: "Canal de cámara",
-        status: "pending",
-        detail: "Usando simulación local hasta conectar la ESP32-CAM"
-      }
-    : {
-        id: "camera",
-        label: "Canal de cámara",
-        status: "online",
-        detail: CAMERA_CONFIG.mode === "mjpeg"
-          ? `Stream MJPEG configurado en ${formatCameraHost(cameraHost)}`
-          : `Reproductor externo configurado en ${formatCameraHost(CAMERA_CONFIG.embedUrl)}`
-      };
-
+  const connected = getLiveAgeMs() <= LIVE_STALE_MS;
   state.services = [
-    { id: "api", label: "API Node", status: "online", detail: "Servidor HTTP y SSE activos" },
-    {
-      id: "mock",
-      label: "Generador mock",
-      status: isMockMode() ? (state.meta.running ? "online" : "paused") : "paused",
-      detail: isMockMode()
-        ? (state.meta.running ? "Emitiendo muestras cada 2 segundos" : "Simulación pausada")
-        : "Desactivado por ingesta real"
-    },
-    {
-      id: "sensor-ingest",
-      label: "Ingesta ESP32-S3",
-      status: isMockMode() ? "pending" : (liveConnected ? "online" : "attention"),
-      detail: isMockMode()
-        ? "Esperando datos reales de la ESP32-S3"
-        : (liveConnected ? `Fuente ${state.meta.dataMode} conectada` : `Sin datos recientes (${formatAge(liveAgeMs)})`)
-    },
-    {
-      id: "http-ingest",
-      label: "HTTP ingest",
-      status: isMockMode() ? "pending" : (liveConnected ? "online" : "attention"),
-      detail: isMockMode()
-        ? "Esperando publicaciones HTTP"
-        : `Última ingesta hace ${formatAge(liveAgeMs)}`
-    },
-    cameraService,
-    {
-      id: "alerts",
-      label: "Motor de alarmas",
-      status: criticalCount > 0 ? "attention" : "online",
-      detail: criticalCount > 0 ? `${criticalCount} crítica(s) activas` : "Sin incidencias críticas"
-    }
+    { id: "api", label: "Servidor", status: "online", detail: "Comunicación con la página disponible" },
+    { id: "sensor-ingest", label: "Equipo de sensores", status: connected ? "online" : "attention",
+      detail: connected ? "Recibiendo mediciones del equipo" : "Esperando mediciones recientes" },
+    { id: "camera", label: "Cámara del cultivo", status: CAMERA_CONFIG.mode === "unavailable" ? "pending" : "configured",
+      detail: CAMERA_CONFIG.mode === "unavailable" ? "Sin configurar" : "La conexión se comprueba al abrir la imagen" },
+    { id: "control", label: "Control de bombas", status: relayControl.info().connected ? "online" : "attention",
+      detail: relayControl.info().connected ? "Estados confirmados por el equipo" : "Sin confirmación reciente del equipo" }
   ];
 }
 
@@ -630,127 +525,27 @@ function broadcast() {
 }
 
 function getPublicState() {
+  const readings = currentLevelState();
   return {
-    sensors: state.sensors,
-    snapshot: state.snapshot,
-    history: state.history,
+    sensors: state.sensors.map(({ base, step, ...sensor }) => sensor.id === "water-level" && readings.applied
+      ? { ...sensor, label: "Nivel resistivo", telemetry: true, min: 0, max: 100, idealMin: undefined, idealMax: undefined } : sensor),
+    snapshot: readings.snapshot,
+    history: readings.history,
     alarms: state.alarms,
-    actuators: state.actuators,
+    actuators: state.meta.dataMode === "esp32-wifi" ? relayControl.actuators()
+      : getLiveAgeMs() > LIVE_STALE_MS ? state.actuators.map(a => ({ ...a, active: null, stale: true })) : state.actuators,
+    relayControl: relayControl.info(),
     services: state.services,
     meta: state.meta,
     camera: { ...CAMERA_CONFIG, analysisInProgress: cameraAnalysisPending },
-    plantVision: state.plantVision || { latest: null, history: [] }
+    plantVision: historyForTarget(state.plantVision, "plant")
   };
 }
 
 function tick() {
-  if (!isMockMode() || !state.meta.running) {
-    return;
-  }
-
-  tickCount += 1;
-  const now = new Date();
-  const freshSnapshot = {};
-
-  sensors.forEach((sensor) => {
-    const previous = state.snapshot[sensor.id]?.value ?? sensor.base;
-    let next = previous + (Math.random() - 0.5) * sensor.step * 2 + (sensor.base - previous) * 0.08;
-
-    if (tickCount % 17 === 0 && Math.random() > 0.6) {
-      next += sensor.step * (Math.random() > 0.5 ? 2.6 : -2.6);
-    }
-
-    next = clamp(next, sensor.min, sensor.max);
-    const reading = formatReading(sensor, next, now);
-
-    freshSnapshot[sensor.id] = reading;
-    state.history[sensor.id].push(reading);
-    state.history[sensor.id] = state.history[sensor.id].slice(-HISTORY_SIZE);
-
-    const alarm = createAlarm(sensor, reading);
-    if (alarm) {
-      state.alarms = [alarm, ...state.alarms.filter((entry) => entry.id !== alarm.id)].slice(0, 20);
-    }
-  });
-
-  state.snapshot = freshSnapshot;
-  state.meta.updatedAt = now.toISOString();
-  buildActuators();
+  buildAlarms();
   buildServices();
-  persistState();
   broadcast();
-}
-
-function injectCritical() {
-  if (!isMockMode()) {
-    return false;
-  }
-
-  const sensor = sensors[Math.floor(Math.random() * sensors.length)];
-  const value = Math.random() > 0.5 ? sensor.max : sensor.min;
-  const reading = formatReading(sensor, value, new Date());
-  state.snapshot[sensor.id] = reading;
-  state.history[sensor.id].push(reading);
-  state.history[sensor.id] = state.history[sensor.id].slice(-HISTORY_SIZE);
-
-  const alarm = createAlarm(sensor, reading);
-  if (alarm) {
-    state.alarms = [alarm, ...state.alarms.filter((entry) => entry.id !== alarm.id)].slice(0, 20);
-  }
-
-  state.meta.updatedAt = new Date().toISOString();
-  buildActuators();
-  buildServices();
-  persistState();
-  broadcast();
-  return true;
-}
-
-function switchToMockMode() {
-  state.meta.running = true;
-  state.meta.dataMode = "mock-backend";
-  state.meta.lastIngestAt = null;
-  state.remoteActuators = [];
-  state.meta.updatedAt = new Date().toISOString();
-  buildActuators();
-  buildServices();
-  persistState();
-  broadcast();
-}
-
-function toggleSimulation() {
-  if (!isMockMode()) {
-    switchToMockMode();
-    return;
-  }
-
-  state.meta.running = !state.meta.running;
-  state.meta.updatedAt = new Date().toISOString();
-  buildServices();
-  persistState();
-  broadcast();
-}
-
-function toggleActuator(id) {
-  if (!isMockMode()) {
-    return false;
-  }
-
-  const current = state.actuators.find((actuator) => actuator.id === id);
-  if (!current) {
-    return false;
-  }
-
-  state.manualOverrides[id] = {
-    active: !current.active
-  };
-
-  state.meta.updatedAt = new Date().toISOString();
-  buildActuators();
-  buildServices();
-  persistState();
-  broadcast();
-  return true;
 }
 
 function resolveSensor(entry) {
@@ -766,41 +561,42 @@ function resolveSensor(entry) {
   return null;
 }
 
-function applyReadingUpdate(payload, fallbackSource = DEFAULT_LIVE_SOURCE) {
+function prepareReading(payload, fallbackSource = DEFAULT_LIVE_SOURCE) {
   const sensor = resolveSensor(payload);
   const value = normalizeNumber(payload?.value ?? payload?.payload ?? payload?.reading ?? payload?.data);
 
-  if (!sensor || value === null) {
+  if (!sensor) {
     return null;
   }
 
   const source = typeof payload.source === "string" && payload.source ? payload.source : fallbackSource;
   const date = normalizeDate(payload.timestamp ?? payload.ts ?? payload.updatedAt);
-  const reading = formatReading(sensor, value, date, source);
-
-  state.snapshot[sensor.id] = reading;
-  state.history[sensor.id] = [...(state.history[sensor.id] || []), reading].slice(-HISTORY_SIZE);
-
-  const alarm = createAlarm(sensor, reading);
-  if (alarm) {
-    state.alarms = [alarm, ...state.alarms.filter((entry) => entry.id !== alarm.id)].slice(0, 20);
-  }
-
-  return reading;
+  return normalizeLiveEntry(sensor, { ...payload, value }, source, date, toStatus);
 }
 
 function applyLivePayload(body) {
   const payload = body && typeof body === "object" ? body : {};
   const source = typeof payload.source === "string" && payload.source ? payload.source : DEFAULT_LIVE_SOURCE;
+  if (!/^[a-zA-Z0-9_.:-]{1,64}$/.test(source) || source === "mock-backend") return false;
   const entries = Array.isArray(payload.readings) ? payload.readings : [payload];
+  const prepared = entries.map(entry => prepareReading({ ...entry, timestamp: entry?.timestamp || payload.timestamp,
+    source: entry?.source || source }, source)).filter(Boolean);
+  if (!prepared.length && !Array.isArray(payload.actuators)) return false;
+  if (state.meta.dataMode !== source) {
+    for (const sensor of sensors) { state.snapshot[sensor.id] = unavailable(sensor, source, new Date()); state.history[sensor.id] = []; }
+    state.alarms = []; state.remoteActuators = [];
+  }
+  if (payload.fullSnapshot === true) {
+    const present = new Set(prepared.map(entry => entry.sensorId));
+    for (const sensor of sensors) if (!present.has(sensor.id)) state.snapshot[sensor.id] = unavailable(sensor, source, new Date());
+  }
   let updatedCount = 0;
   let newestDate = null;
 
-  entries.forEach((entry) => {
-    const reading = applyReadingUpdate({ ...entry, source: entry?.source || source }, source);
-    if (!reading) {
-      return;
-    }
+  prepared.forEach((reading) => {
+    const sensor = sensorById.get(reading.sensorId);
+    state.snapshot[sensor.id] = reading;
+    state.history[sensor.id] = [...(state.history[sensor.id] || []), reading].slice(-HISTORY_SIZE);
 
     updatedCount += 1;
     const readingDate = normalizeDate(reading.timestamp);
@@ -820,9 +616,16 @@ function applyLivePayload(body) {
   const effectiveDate = newestDate || normalizeDate(payload.timestamp);
   state.meta.running = false;
   state.meta.dataMode = source;
+  if (["tesis-huerta-j17", "unknown"].includes(payload.firmwareProfile)) state.meta.firmwareProfile = payload.firmwareProfile;
+  if (["tesis-huerta-j17-diagnostico-v1", "tesis-huerta-j17-wifi-v1", "tesis-huerta-j17-wifi-v2", "tesis-huerta-j17-wifi-v3"].includes(payload.firmwareBuild)) state.meta.firmwareBuild = payload.firmwareBuild;
+  if (source === "esp32-wifi") state.meta.transport = { type: "wifi-http", deviceId: payload.device.id, ip: relayControl.info().ip };
+  if (payload.transport?.type === "usb-serial" && /^COM\d+$/i.test(payload.transport.port) && Number.isInteger(payload.transport.baud)) {
+    state.meta.transport = { type: "usb-serial", port: payload.transport.port, baud: payload.transport.baud };
+  }
   state.meta.updatedAt = effectiveDate.toISOString();
   state.meta.lastIngestAt = effectiveDate.toISOString();
   buildActuators();
+  buildAlarms();
   buildServices();
   persistState();
   broadcast();
@@ -1083,9 +886,10 @@ function queueCameraOperation(operation) {
 async function capturePlantImage() {
   if (CAMERA_CONFIG.mode !== "mjpeg") throw new Error("Camera capture not configured");
   if (cameraAnalysisPending) throw Object.assign(new Error("Ya hay una captura de analisis en curso"), { statusCode: 409 });
+  const simulatorCase = CAMERA_IS_SCREEN ? simulator.beginCapture() : null;
   cameraAnalysisPending = true;
-  broadcast();
   try {
+    broadcast();
     return await queueCameraOperation(async () => {
       for (const response of activeCameraResponses) response.destroy();
       activeCameraResponses.clear();
@@ -1106,22 +910,29 @@ async function capturePlantImage() {
         }
       });
       fs.mkdirSync(PLANT_CAPTURE_DIR, { recursive: true });
+      if (simulatorCase) simulator.assertCapture(simulatorCase);
       const burstId = Date.now().toString(36);
       const captures = frames.map((frame, index) => {
         const fileName = `plant-${burstId}-${index + 1}.jpg`;
         fs.writeFileSync(path.join(PLANT_CAPTURE_DIR, fileName), frame.buffer);
         return {
           fileName, imageUrl: `${PLANT_CAPTURE_ROUTE}${fileName}`,
+          captureTarget: CAMERA_CAPTURE_TARGET,
+          ...(simulatorCase ? { simulator: simulatorCase } : {}),
+          captureSettings: { framesize: CAMERA_STILL_PROFILE.framesize, quality: CAMERA_ANALYSIS_JPEG_QUALITY, ...CAMERA_STILL_PROFILE.settings },
           capturedAt: frame.capturedAt, bytes: frame.buffer.length, contentType: "image/jpeg",
           lighting: { mode: CAMERA_ANALYSIS_FLASH_INTENSITY > 0 ? "flash" : "ambient",
-            intensity: CAMERA_ANALYSIS_FLASH_INTENSITY, protocol: "settled-burst-v1" }
+            intensity: CAMERA_ANALYSIS_FLASH_INTENSITY, protocol: CAMERA_IS_SCREEN ? "screen-settled-burst-v1" : "settled-burst-v1" }
         };
       });
-      return { ...captures[0], frames: captures, burstId };
+      const capture = { ...captures[0], frames: captures, burstId };
+      if (simulatorCase) fs.writeFileSync(path.join(PLANT_CAPTURE_DIR, `case-${burstId}.json`), JSON.stringify(capture, null, 2));
+      return capture;
     });
   } finally {
     currentCameraProfileKey = "";
     cameraAnalysisPending = false;
+    if (simulatorCase) simulator.endCapture();
     broadcast();
   }
 }
@@ -1135,7 +946,7 @@ function savePlantVisionAnalysis(analysis) {
 
   state.plantVision = {
     latest: entry,
-    history: [...(current.history || []), entry].slice(-PLANT_VISION_HISTORY_SIZE)
+    history: retainHistory([...(current.history || []), entry], PLANT_VISION_HISTORY_SIZE)
   };
   persistState();
   broadcast();
@@ -1211,22 +1022,25 @@ const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8"
+  ".json": "application/json; charset=utf-8",
+  ".webp": "image/webp",
+  ".ttf": "font/ttf"
 };
 
 function serveStatic(requestPath, response) {
   const safePath = requestPath === "/"
     ? "index.html"
-    : path.normalize(decodeURIComponent(requestPath)).replace(/^(\.\.(\/|\\|$))+/, "").replace(/^\/+/, "");
-  const filePath = path.join(APP_DIR, safePath);
-  const blockedRoots = [`data${path.sep}`, `app${path.sep}docs${path.sep}`];
+    : path.normalize(decodeURIComponent(requestPath)).replace(/^[/\\]+/, "");
+  const filePath = path.resolve(APP_DIR, safePath);
+  const publicPath = safePath.replaceAll(path.sep, "/");
+  const allowed = publicPath === "index.html" || ["app/scripts/", "app/styles/", "app/simulator/"].some(prefix => publicPath.startsWith(prefix));
 
-  if (!filePath.startsWith(APP_DIR)) {
+  if (!filePath.startsWith(APP_DIR + path.sep)) {
     sendJson(response, 403, { error: "Forbidden" });
     return;
   }
 
-  if (blockedRoots.some((blockedRoot) => safePath.startsWith(blockedRoot))) {
+  if (!allowed || publicPath.split("/").some(part => part.startsWith("."))) {
     sendJson(response, 403, { error: "Forbidden" });
     return;
   }
@@ -1246,12 +1060,17 @@ function serveStatic(requestPath, response) {
 }
 
 function parseBody(request) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let raw = "";
+    let size = 0, tooLarge = false;
     request.on("data", (chunk) => {
+      if (tooLarge) return;
+      size += chunk.length;
+      if (size > 65536) { tooLarge = true; reject(Object.assign(new Error("Cuerpo demasiado grande"), { statusCode: 413 })); return; }
       raw += chunk;
     });
     request.on("end", () => {
+      if (tooLarge) return;
       if (!raw) {
         resolve({});
         return;
@@ -1260,13 +1079,15 @@ function parseBody(request) {
       try {
         resolve(JSON.parse(raw));
       } catch {
-        resolve({});
+        reject(Object.assign(new Error("JSON invalido"), { statusCode: 400 }));
       }
     });
+    request.on("error", reject);
   });
 }
 
 buildActuators();
+buildAlarms();
 buildServices();
 persistState();
 setInterval(tick, TICK_INTERVAL_MS);
@@ -1281,6 +1102,13 @@ const server = http.createServer(async (request, response) => {
   try {
     const host = request.headers.host || `localhost:${PORT}`;
     const url = new URL(request.url || "/", `http://${host}`);
+    if (await handleSimulator(request, response, url)) return;
+    if (url.pathname === "/simulador" || url.pathname === "/simulador/") {
+      serveStatic("/app/simulator/index.html", response); return;
+    }
+    if (url.pathname === "/simulador/control" || url.pathname === "/simulador/control/") {
+      serveStatic("/app/simulator/control.html", response); return;
+    }
 
     if (request.method === "GET" && url.pathname === CAMERA_STREAM_PROXY_PATH) {
       if (cameraAnalysisPending) { sendJson(response, 409, { error: "Captura de analisis en curso" }); return; }
@@ -1352,11 +1180,18 @@ const server = http.createServer(async (request, response) => {
       }
 
       const body = await parseBody(request);
+      if (body.source === "esp32-wifi") {
+        if (INGEST_TOKEN.length < 16) { sendJson(response, 503, { error: "Configurar INGEST_TOKEN para Wi-Fi" }); return; }
+        relayControl.accept(body);
+      } else if (relayControl.info().connected) {
+        sendJson(response, 409, { error: "La ESP32 Wi-Fi esta activa; no se mezcla con otra fuente" }); return;
+      }
       const ok = applyLivePayload(body);
       sendJson(response, ok ? 200 : 400, {
         ok,
         dataMode: state.meta.dataMode,
-        updatedAt: state.meta.updatedAt
+        updatedAt: state.meta.updatedAt,
+        ...(ok && body.source === "esp32-wifi" ? { control: relayControl.response() } : {})
       });
       return;
     }
@@ -1378,33 +1213,34 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/control/toggle-simulation") {
-      toggleSimulation();
-      sendJson(response, 200, {
-        ok: true,
-        running: state.meta.running,
-        dataMode: state.meta.dataMode
-      });
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/control/inject-critical") {
-      const ok = injectCritical();
-      sendJson(response, ok ? 200 : 409, {
-        ok,
-        error: ok ? undefined : "Disabled while live data ingestion is active"
-      });
+    if (request.method === "POST" && ["/api/control/toggle-simulation", "/api/control/inject-critical"].includes(url.pathname)) {
+      sendJson(response, 410, { error: "Esta función ya no está disponible en la instalación." });
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/control/actuator") {
       const body = await parseBody(request);
-      const ok = toggleActuator(body.id);
-      sendJson(response, ok ? 200 : 409, {
-        ok,
-        error: ok ? undefined : "Actuator control is only available in mock mode"
-      });
+      controlAccess.authorize(request);
+      const command = relayControl.queue(body);
+      broadcast();
+      sendJson(response, 202, { ok: true, command });
       return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/control/stop-all") {
+      controlAccess.authorize(request);
+      const body = await parseBody(request);
+      const commands = relayControl.stopAll(body);
+      broadcast(); sendJson(response, 202, { ok: true, commands }); return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/control/access") {
+      sendJson(response, 200, controlAccess.info(request)); return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/control/login") {
+      if (!sameOrigin(request)) { sendJson(response, 403, { error: "Origen no permitido" }); return; }
+      const body = await parseBody(request);
+      response.setHeader("Set-Cookie", controlAccess.login(request, body.password));
+      sendJson(response, 200, { ok: true }); return;
     }
 
     if (request.method !== "GET" && request.method !== "HEAD") {
@@ -1414,8 +1250,8 @@ const server = http.createServer(async (request, response) => {
 
     serveStatic(url.pathname, response);
   } catch (error) {
-    sendJson(response, 500, {
-      error: "Internal server error"
+    sendJson(response, error.statusCode || 500, {
+      error: error.statusCode ? error.message : "Internal server error"
     });
   }
 });
@@ -1423,4 +1259,3 @@ const server = http.createServer(async (request, response) => {
 server.listen(PORT, () => {
   console.log(`HydroVision running on http://localhost:${PORT}`);
 });
-

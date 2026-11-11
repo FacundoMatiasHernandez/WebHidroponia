@@ -37,6 +37,13 @@
   }
 
   function comparable(current, previous) {
+    if ((current.captureTarget || "plant") !== (previous?.captureTarget || "plant")) return false;
+    const scenario = current.simulator?.config || {}, oldScenario = previous?.simulator?.config || {};
+    if (Object.keys(scenario).length !== Object.keys(oldScenario).length
+        || Object.keys(scenario).some(key => scenario[key] !== oldScenario[key])) return false;
+    const settings = current.captureSettings || {}, oldSettings = previous?.captureSettings || {};
+    if (Object.keys(settings).length !== Object.keys(oldSettings).length
+        || Object.keys(settings).some((key) => settings[key] !== oldSettings[key])) return false;
     const a = current.metrics, b = previous?.metrics;
     if (!validMeasurement(b) || clipped(b) || a.analysisVersion !== b.analysisVersion
         || a.sampleWidth !== b.sampleWidth || a.sampleHeight !== b.sampleHeight || !sameRegion(a.roi, b.roi)) return false;

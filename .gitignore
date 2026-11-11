@@ -1,4 +1,7 @@
 data/runtime-state.json
+data/water-level-calibration.json
+data/simulator-state.json
+data/simulator-state.json.tmp
 data/plant-captures/
 data/vision-validation/
 plcnext.local.json
@@ -7,6 +10,15 @@ firmware/**/secrets.h
 __pycache__/
 *.pyc
 .env.camera.local
+.env.usb.local
+.env.wifi.local
+.env
+.env.*.local
+firmware/**/build*/
+firmware/**/*.bin
+firmware/**/*.elf
+firmware/**/*.map
+firmware/**/*.hex
 node_modules/
 tmp/
 output/servo_mg995_test/build/

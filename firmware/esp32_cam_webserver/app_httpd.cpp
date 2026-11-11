@@ -354,6 +354,10 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
     res = s->set_brightness(s, val);
   } else if (!strcmp(variable, "saturation")) {
     res = s->set_saturation(s, val);
+  } else if (!strcmp(variable, "sharpness")) {
+    res = s->set_sharpness ? s->set_sharpness(s, val) : -1;
+  } else if (!strcmp(variable, "denoise")) {
+    res = s->set_denoise ? s->set_denoise(s, val) : -1;
   } else if (!strcmp(variable, "gainceiling")) {
     res = s->set_gainceiling(s, (gainceiling_t)val);
   } else if (!strcmp(variable, "colorbar")) {
@@ -463,6 +467,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
   p += snprintf(p, end - p, "\"contrast\":%d,", s->status.contrast);
   p += snprintf(p, end - p, "\"saturation\":%d,", s->status.saturation);
   p += snprintf(p, end - p, "\"sharpness\":%d,", s->status.sharpness);
+  p += snprintf(p, end - p, "\"denoise\":%u,", s->status.denoise);
   p += snprintf(p, end - p, "\"special_effect\":%u,", s->status.special_effect);
   p += snprintf(p, end - p, "\"wb_mode\":%u,", s->status.wb_mode);
   p += snprintf(p, end - p, "\"awb\":%u,", s->status.awb);

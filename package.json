@@ -2,11 +2,16 @@
   "name": "hydrovision-dashboard",
   "version": "1.0.0",
   "private": true,
-  "description": "Dashboard full-stack para monitoreo de huerta hidropónica con backend Node y simulación lista para integrar hardware real.",
+  "description": "Monitoreo de huerta con sensores reales, camara y control manual de cuatro bombas.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "test": "node --test tests/*.test.js",
     "start": "node server.js",
     "start:camera": "node --env-file=.env.camera.local server.js",
+    "start:usb": "node scripts/start-usb.js",
+    "start:wifi": "node --env-file-if-exists=.env.camera.local --env-file=.env.wifi.local server.js",
     "reset-data": "node -e \"require('fs').rmSync('data/runtime-state.json',{force:true})\""
   }
 }

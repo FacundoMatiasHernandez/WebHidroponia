@@ -62,3 +62,16 @@ test("a disconnected burst rejects instead of hanging", async () => {
     await assert.rejects(collectCameraBurst(`http://127.0.0.1:${server.address().port}`, { warmupMs: 0, timeoutMs: 500 }), /ended|disconnected/);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
+
+test("screen detail controls and disabled flash apply during capture and restore after failure", async () => {
+  const status = { sharpness: 1, denoise: 0, quality: 12, ae_level: -1, led_intensity: 0 };
+  const original = { ...status };
+  const settings = { sharpness: 2, denoise: 1, quality: 8, ae_level: -3, led_intensity: 0 };
+  await assert.rejects(withRestoredSettings(async () => ({ ...status }), async (key, value) => {
+    status[key] = value;
+  }, settings, async () => {
+    assert.deepEqual(status, settings);
+    throw new Error("capture failed");
+  }), /capture failed/);
+  assert.deepEqual(status, original);
+});

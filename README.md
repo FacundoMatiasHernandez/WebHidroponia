@@ -2,6 +2,58 @@
 
 Dashboard web para monitoreo de una huerta hidroponica con ESP32-S3, ESP32-CAM y analisis visual del cultivo.
 
+## Empezar en otra PC
+
+Guia actualizada: [Instalacion y transferencia](app/docs/new-notebook-setup.md).
+Para compartir: [Guia PDF](output/pdf/HydroVision_Guia_Companero.pdf) y
+[prompt para el asistente de tu companero](PROMPT_PARA_COMPANERO.md).
+
+Para obtener la interfaz sin configurar hardware:
+
+```powershell
+git clone https://github.com/FacundoMatiasHernandez/WebHidroponia.git
+cd WebHidroponia
+node server.js
+```
+
+Abrir http://localhost:4173/. Requiere Node.js 24; no necesita npm install.
+Sin placas no hay datos inventados. Para ver la instalacion existente desde
+otra pantalla, usar la IP de su PC servidora en lugar de iniciar otro servidor.
+El firmware de cuatro bombas es `firmware/tesis_huerta_j17_wifi_v3/`;
+la cuarta salida esta en GPIO41, no GPIO42.
+
+## Panel de operacion
+
+La interfaz esta organizada en Resumen, Bombas, Camara, Tendencias y Equipo.
+En dispositivos moviles, la navegacion se encuentra en la barra inferior.
+El resumen agrupa ambiente, solucion nutritiva y niveles; las observaciones
+son actuales y no repiten una alarma por cada muestra recibida.
+
+El servidor inicia esperando datos reales, incluso sin DATA_MODE.
+No genera mediciones de demostracion ni las recupera de archivos antiguos.
+Una lectura ausente, invalida o vencida aparece sin valor; la EC estimada
+y el TDS sin calibrar conservan su advertencia. Los intervalos de referencia
+son los configurados, no una validacion agronomica para cualquier cultivo.
+
+Las bombas muestran el estado electrico confirmado por la ESP32, no caudal.
+El encendido requiere confirmacion; el continuo exige ademas aceptar la
+supervision de la dosis. No cambian las protecciones ni el protocolo de control.
+Los resultados del laboratorio con tablet no aparecen como diagnosticos del
+cultivo. Con CAMERA_CAPTURE_TARGET=screen, el analisis de plantas de la interfaz
+de operacion permanece deshabilitado. El laboratorio se conserva por separado.
+Las tipografias se sirven localmente, sin depender de servicios de fuentes externos.
+
+## Laboratorio con tablet sincronizada
+
+Con `CAMERA_CAPTURE_TARGET=screen`, abrir en la PC
+`http://localhost:4173/simulador/control`. El panel muestra el enlace local
+que debe abrirse en la tablet; tocar **Iniciar pantalla** y elegirla en el panel.
+Desde la PC se controlan los seis tipos de plagas, amarillo, fondo, escala,
+giro, dia y carta de enfoque. Las capturas esperan una confirmacion reciente
+de la pantalla y conservan el caso exacto junto a las tres fotos.
+No hace falta Codex en la tablet. Se conserva el sitio publicado original.
+Guia y protocolo: [Simulador local](app/simulator/README.md).
+
 ## Continuar desde otra notebook
 
 Guia completa: [Instalacion y traslado a otra PC](app/docs/new-notebook-setup.md).
@@ -23,7 +75,7 @@ La plantilla de camara conserva QXGA y usa compresion 12 para foto y analisis,
 el ajuste local probado tras errores `FB-OVF`. El video mantiene su perfil.
 `npm start` no carga `.env.camera.local`; usar `npm run start:camera` para ello.
 
-La ESP32-S3 envia datos al `WEB_HOST` grabado en su firmware: al cambiar de PC
+La ESP32-S3 J17 envia datos a `WEB_INGEST_URL` grabado en su firmware: al cambiar de PC
 hay que actualizar esa direccion si cambia la IP del servidor. Las fotos,
 el historial y las credenciales son locales y no viajan con `git clone`.
 
@@ -41,7 +93,7 @@ de compresion de octubre):
 - Sistema de alarmas con severidad `warning` y `critical`.
 - Canal de camara ESP32-CAM con imagen HD y video MJPEG.
 - Analisis de manchas por pixel, seleccion de hoja, control de calidad y comparacion de tres fotos con luz estabilizada.
-- Modo mock para probar la interfaz sin hardware conectado.
+- Estados explicitos de desconexion, calibracion pendiente y lectura no disponible.
 
 ## Arquitectura actual
 
@@ -118,7 +170,8 @@ node -e "require('fs').rmSync('data/runtime-state.json',{force:true})"
 - `index.html`: layout principal del dashboard.
 - `server.js`: backend HTTP, SSE, persistencia, camara y capturas.
 - `app/styles/main.css`: sistema visual responsive.
-- `app/scripts/charts.js`: render de graficos y camara simulada.
+- `app/scripts/charts.js`: graficos de mediciones con marcas de tiempo reales y cortes de adquisicion.
+- `app/scripts/operations.js`: presentacion de lecturas, estados y resumen operativo.
 - `app/scripts/app.js`: cliente, seleccion de hoja, visualizacion y comparacion historica.
 - `app/scripts/plant-vision.js`: segmentacion foliar, manchas, calidad y repetibilidad; reutilizable en navegador y pruebas Node.
 - `app/scripts/plant-trends.js`: comparacion historica de area con controles de compatibilidad y variacion de rafaga.
@@ -136,3 +189,17 @@ No versionar:
 - `data/plant-captures/`
 
 Usar los archivos `.example` como plantilla para configurar WiFi e IP local.
+
+## ESP32-S3 por Wi-Fi y bombas
+
+El firmware J17 integrado tambien puede enviar todas sus lecturas por Wi-Fi,
+sin el lector USB. El dashboard permite pulsos manuales individuales de las
+cuatro bombas peristalticas con firmware v3 y muestra el estado confirmado por la ESP32.
+Incluye pulsos de hasta 10 segundos o modo continuo manual, interbloqueo entre
+bombas, apagado de todas y ordenes con vencimiento. El modo continuo conserva
+el corte local tras 30 segundos sin servidor. No realiza dosificacion automatica.
+
+Inicio local: `npm run start:wifi`, con `.env.wifi.local` configurado.
+Guia: [Wi-Fi y bombas](app/docs/esp32-wifi-control.md).
+La PC del servidor debe permanecer encendida; la ESP32 necesita alimentacion
+independiente si se retira su USB de la PC.
